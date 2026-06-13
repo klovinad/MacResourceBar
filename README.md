@@ -23,7 +23,7 @@
 ## 2. Recommended architecture
 
 - `NetworkTotalsMonitor`: reads interface counters and computes total download/upload bytes per second.
-- `NetworkProcessMonitor` (`NetTopProcessMonitor.swift`): launches `/usr/sbin/nettop`, parses CSV delta output, and emits per-process network rows.
+- `NetworkProcessMonitor` (`NetTopProcessMonitor.swift`): launches `/usr/bin/nettop`, parses CSV delta output, and emits per-process network rows.
 - `CPUProcessMonitor`: samples per-process CPU usage (`proc_pidinfo`).
 - `MemoryProcessMonitor`: samples per-process resident memory.
 - `DiskProcessMonitor`: samples per-process read/write activity (`proc_pid_rusage`).
@@ -46,7 +46,7 @@ Network app/
 │   ├── Info.plist
 │   ├── NetworkMenuMonitorApp.swift
 │   ├── Models/
-│   │   └── AppTrafficSnapshot.swift
+│   │   └── AppResourceSnapshot.swift
 │   ├── Services/
 │   │   ├── LaunchAtLoginService.swift
 │   │   ├── NetTopProcessMonitor.swift
@@ -82,7 +82,7 @@ Network app/
 - No special entitlements are required for the basic MVP.
 - No packet capture entitlement is used.
 - The total-throughput monitor uses standard interface counters.
-- Per-app network values depend on `/usr/sbin/nettop`.
+- Per-app network values depend on `/usr/bin/nettop`.
 - Per-app CPU/RAM/disk counters are obtained from process APIs for currently visible running applications.
 
 ## 8. Known limitations

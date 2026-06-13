@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-final class AppResourceMonitor {
+final class AppResourceMonitor: @unchecked Sendable {
     var onUpdate: (([AppResourceSnapshot]) -> Void)?
     var onStatusChange: ((String?) -> Void)?
 

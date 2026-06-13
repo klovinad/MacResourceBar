@@ -8,7 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		A00100010000000000000001 /* NetworkMenuMonitorApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00100010000000000000011 /* NetworkMenuMonitorApp.swift */; };
-		A00100010000000000000002 /* AppTrafficSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00100010000000000000012 /* AppTrafficSnapshot.swift */; };
+		A00100010000000000000002 /* AppResourceSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00100010000000000000012 /* AppResourceSnapshot.swift */; };
 		A00100010000000000000003 /* LaunchAtLoginService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00100010000000000000013 /* LaunchAtLoginService.swift */; };
 		A00100010000000000000004 /* NetTopProcessMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00100010000000000000014 /* NetTopProcessMonitor.swift */; };
 		A00100010000000000000005 /* NetworkTotalsMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00100010000000000000015 /* NetworkTotalsMonitor.swift */; };
@@ -26,7 +26,7 @@
 /* Begin PBXFileReference section */
 		A00100010000000000000010 /* NetworkMenuMonitor.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NetworkMenuMonitor.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00100010000000000000011 /* NetworkMenuMonitorApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkMenuMonitorApp.swift; sourceTree = "<group>"; };
-		A00100010000000000000012 /* AppTrafficSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTrafficSnapshot.swift; sourceTree = "<group>"; };
+		A00100010000000000000012 /* AppResourceSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppResourceSnapshot.swift; sourceTree = "<group>"; };
 		A00100010000000000000013 /* LaunchAtLoginService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAtLoginService.swift; sourceTree = "<group>"; };
 		A00100010000000000000014 /* NetTopProcessMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetTopProcessMonitor.swift; sourceTree = "<group>"; };
 		A00100010000000000000015 /* NetworkTotalsMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkTotalsMonitor.swift; sourceTree = "<group>"; };
@@ -88,7 +88,7 @@
 		A00100010000000000000033 /* Models */ = {
 			isa = PBXGroup;
 			children = (
-				A00100010000000000000012 /* AppTrafficSnapshot.swift */,
+				A00100010000000000000012 /* AppResourceSnapshot.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -201,7 +201,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A00100010000000000000009 /* AppDelegate.swift in Sources */,
-				A00100010000000000000002 /* AppTrafficSnapshot.swift in Sources */,
+			A00100010000000000000002 /* AppResourceSnapshot.swift in Sources */,
 			A00100010000000000000006 /* ByteRateFormatter.swift in Sources */,
 			A00100010000000000000003 /* LaunchAtLoginService.swift in Sources */,
 			A00100010000000000000007 /* MenuBarViewModel.swift in Sources */,

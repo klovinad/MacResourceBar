@@ -235,7 +235,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         button.lineBreakMode = .byTruncatingHead
         let symbolConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
-        let fallbackImage = NSImage(systemSymbolName: Constants.fallbackStatusSymbolName, accessibilityDescription: "Network Menu Monitor")?
+        let fallbackImage = NSImage(systemSymbolName: Constants.fallbackStatusSymbolName, accessibilityDescription: "NetworkMenuMonitor")?
             .withSymbolConfiguration(symbolConfig)
         fallbackImage?.isTemplate = true
         button.image = fallbackImage
@@ -329,7 +329,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc
     private func togglePopover(_ sender: AnyObject?) {
         ensureStatusItem()
-        guard let button = statusItem?.button else { return }
+        guard statusItem?.button != nil else { return }
 
         if NSApp.currentEvent?.type == .rightMouseUp {
             if popover.isShown {

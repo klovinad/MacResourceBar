@@ -18,7 +18,7 @@ final class CPUProcessMonitor {
         activePids = Set(NSWorkspace.shared.runningApplications.compactMap { $0.processIdentifier })
 
         for pid in activePids {
-            guard var taskInfo = readTaskInfo(for: pid) else { continue }
+            guard let taskInfo = readTaskInfo(for: pid) else { continue }
 
             let totalCPU = taskInfo.totalCPUTime
             if let previous = previousCPUByPid[pid], now > previous.timestamp {

@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import Foundation
+
 
 struct NetworkProcessSample {
     let pid: pid_t
