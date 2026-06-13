@@ -76,7 +76,6 @@ struct MenuBarPopoverView: View {
                 }
             }
             .pickerStyle(.menu)
-            .fixedSize()
 
             Spacer(minLength: 0)
 
@@ -95,7 +94,6 @@ struct MenuBarPopoverView: View {
             }
             .pickerStyle(.menu)
             .labelsHidden()
-            .fixedSize()
         }
     }
 
@@ -106,7 +104,6 @@ struct MenuBarPopoverView: View {
             Text(message)
                 .font(.callout)
                 .foregroundStyle(.secondary)
-                .fixedSize()
         } else if viewModel.appSnapshots.isEmpty {
             Text("Waiting for per-app activity…")
                 .font(.callout)
@@ -153,7 +150,6 @@ struct MenuBarPopoverView: View {
             .pickerStyle(.menu)
             .labelsHidden()
             .controlSize(.small)
-            .fixedSize()
         }
     }
 
@@ -188,7 +184,6 @@ struct MenuBarPopoverView: View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(snapshots) { snapshot in
                 AppResourceRow(snapshot: snapshot)
-
                 Divider()
             }
         }
@@ -227,7 +222,7 @@ struct MenuBarPopoverView: View {
         }
         let r = compact(ByteRateFormatter.stableMenuRate(for: activity.readBytesPerSecond, preferredUnitIndex: nil).text)
         let w = compact(ByteRateFormatter.stableMenuRate(for: activity.writeBytesPerSecond, preferredUnitIndex: nil).text)
-        return "\(r)↓ \(w)↑"
+        return "\(r) D \(w) U"
     }
 
     private func trayMetricCard(_ metric: MenuBarViewModel.TrayMetric) -> some View {
@@ -307,10 +302,10 @@ private struct AppResourceRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
-            Image(nsImage: snapshot.icon ?? NSImage())
+            Image(nsImage: snapshot.icon ?? NSWorkspace.shared.icon(for: .application))
                 .resizable()
                 .aspectRatio(contentMode: .fit)
-                .fixedSize()
+                .frame(width: 22, height: 22)
                 .cornerRadius(5)
 
             Text(snapshot.displayName)
@@ -322,27 +317,25 @@ private struct AppResourceRow: View {
 
             Text(String(format: "%.1f%%", snapshot.cpuUsagePercent))
                 .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .fixedSize()
+                .lineLimit(1)
 
             Text(byteFormatter.string(fromByteCount: Int64(snapshot.ramBytes))
                 .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .fixedSize()
+                .lineLimit(1)
 
             VStack(alignment: .trailing, spacing: 1) {
-                Text("\(ByteRateFormatter.alignedRate(for: snapshot.diskReadBytesPerSecond, preferredUnitIndex: nil).text)↓")
+                Text("\(ByteRateFormatter.alignedRate(for: snapshot.diskReadBytesPerSecond, preferredUnitIndex: nil).text) D")
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
-                Text("\(ByteRateFormatter.alignedRate(for: snapshot.diskWriteBytesPerSecond, preferredUnitIndex: nil).text)↑")
+                Text("\(ByteRateFormatter.alignedRate(for: snapshot.diskWriteBytesPerSecond, preferredUnitIndex: nil).text) U")
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
             }
-            .fixedSize()
 
             VStack(alignment: .trailing, spacing: 1) {
-                Text("\(ByteRateFormatter.alignedRate(for: snapshot.downloadBytesPerSecond, preferredUnitIndex: nil).text)↓")
+                Text("\(ByteRateFormatter.alignedRate(for: snapshot.downloadBytesPerSecond, preferredUnitIndex: nil).text) D")
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
-                Text("\(ByteRateFormatter.alignedRate(for: snapshot.uploadBytesPerSecond, preferredUnitIndex: nil).text)↑")
+                Text("\(ByteRateFormatter.alignedRate(for: snapshot.uploadBytesPerSecond, preferredUnitIndex: nil).text) U")
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
             }
-            .fixedSize()
         }
     }
 }
