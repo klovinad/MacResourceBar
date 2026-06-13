@@ -319,7 +319,7 @@ private struct AppResourceRow: View {
                 .font(.system(size: 12, weight: .medium, design: .monospaced))
                 .lineLimit(1)
 
-            Text(byteFormatter.string(fromByteCount: Int64(snapshot.ramBytes))
+            Text(byteFormatter.string(fromByteCount: Int64(snapshot.ramBytes)))
                 .font(.system(size: 12, weight: .medium, design: .monospaced))
                 .lineLimit(1)
 
