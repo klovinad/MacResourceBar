@@ -201,11 +201,17 @@ final class MenuBarViewModel: ObservableObject {
         }
 
         appResourceMonitor.onUpdate = { [weak self] snapshots in
-            self?.appSnapshots = snapshots
+            guard let self else { return }
+            Task { @MainActor [weak self] in
+                self?.appSnapshots = snapshots
+            }
         }
 
         appResourceMonitor.onStatusChange = { [weak self] message in
-            self?.perAppStatusMessage = message
+            guard let self else { return }
+            Task { @MainActor [weak self] in
+                self?.perAppStatusMessage = message
+            }
         }
 
         systemMetricsMonitor.onSample = { [weak self] sample in

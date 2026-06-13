@@ -2,6 +2,13 @@ import Foundation
 import AppKit
 import Darwin
 
+@_silgen_name("proc_pid_rusage")
+private func procPIDRUsage(
+    _ pid: pid_t,
+    _ flavor: Int32,
+    _ buffer: UnsafeMutableRawPointer
+) -> Int32
+
 struct DiskProcessSample {
     let pid: pid_t
     let readBytesPerSecond: Double
@@ -53,7 +60,10 @@ final class DiskProcessMonitor {
 
     private func readUsage(for pid: pid_t) -> DiskUsage? {
         var usage = rusage_info_current()
-        let result = proc_pid_rusage(pid, RUSAGE_INFO_CURRENT, &usage)
+
+        let result = withUnsafeMutablePointer(to: &usage) { pointer in
+            procPIDRUsage(pid, RUSAGE_INFO_CURRENT, UnsafeMutableRawPointer(pointer))
+        }
         guard result == 0 else { return nil }
 
         return DiskUsage(

@@ -103,15 +103,11 @@ final class AppResourceMonitor {
     }
 
     private func publishUpdate(_ snapshots: [AppResourceSnapshot]) {
-        DispatchQueue.main.async { [onUpdate] in
-            onUpdate?(snapshots)
-        }
+        onUpdate?(snapshots)
     }
 
     private func publishStatus(_ message: String?) {
-        DispatchQueue.main.async { [onStatusChange] in
-            onStatusChange?(message)
-        }
+        onStatusChange?(message)
     }
 
     private func publishIfNeeded() {
