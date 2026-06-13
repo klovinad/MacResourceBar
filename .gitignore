@@ -1,6 +1,7 @@
 .DS_Store
 .venv_pdf/
 .claude/
+Release/
 DerivedData/
 build/
 *.xcworkspace/xcuserdata/
