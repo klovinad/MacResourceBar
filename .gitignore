@@ -1,0 +1,9 @@
+.DS_Store
+.venv_pdf/
+.claude/
+DerivedData/
+build/
+*.xcworkspace/xcuserdata/
+*.xcuserdatad/
+*.xcuserstate
+*.swp
