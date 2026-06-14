@@ -4,8 +4,8 @@ import SwiftUI
 
 private final class StatusSegmentView: NSView {
     private enum Layout {
-        static let horizontalPadding: CGFloat = 1
-        static let verticalPadding: CGFloat = 1
+        static let horizontalPadding: CGFloat = 0
+        static let verticalPadding: CGFloat = 0
     }
 
     private let label = NSTextField(labelWithString: "")
@@ -17,11 +17,12 @@ private final class StatusSegmentView: NSView {
         translatesAutoresizingMaskIntoConstraints = false
 
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .monospacedSystemFont(ofSize: 12.5, weight: .regular)
+        label.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         label.textColor = .labelColor
         label.alignment = .center
         label.lineBreakMode = .byClipping
         label.cell?.wraps = false
+        label.cell?.usesSingleLineMode = true
         addSubview(label)
 
         NSLayoutConstraint.activate([
@@ -87,27 +88,27 @@ private final class StatusItemContentView: NSView {
         stackView.translatesAutoresizingMaskIntoConstraints = false
         stackView.orientation = .horizontal
         stackView.alignment = .centerY
-        stackView.spacing = 2
-        stackView.edgeInsets = NSEdgeInsets(top: 0, left: 6, bottom: 0, right: 2)
+        stackView.spacing = 5
+        stackView.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
         stackView.detachesHiddenViews = true
         stackView.setContentHuggingPriority(.required, for: .horizontal)
         stackView.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        highRefreshSegment.setMinimumWidth(26)
-        cpuSegment.setMinimumWidth(58)
-        ramSegment.setMinimumWidth(58)
-        tempSegment.setMinimumWidth(58)
-        diskSegment.setMinimumWidth(74)
-        externalDiskSegment.setMinimumWidth(74)
-        networkSegment.setMinimumWidth(92)
+        highRefreshSegment.setMinimumWidth(20)
+        cpuSegment.setMinimumWidth(50)
+        ramSegment.setMinimumWidth(50)
+        tempSegment.setMinimumWidth(52)
+        diskSegment.setMinimumWidth(64)
+        externalDiskSegment.setMinimumWidth(54)
+        networkSegment.setMinimumWidth(82)
 
         addSubview(stackView)
 
         NSLayoutConstraint.activate([
             stackView.leadingAnchor.constraint(equalTo: leadingAnchor),
             stackView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            stackView.topAnchor.constraint(equalTo: topAnchor),
-            stackView.bottomAnchor.constraint(equalTo: bottomAnchor)
+            stackView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            stackView.heightAnchor.constraint(lessThanOrEqualTo: heightAnchor)
         ])
     }
 
@@ -162,7 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private enum Constants {
         static let popoverSizeExpanded = NSSize(width: 820, height: 720)
         static let popoverSizeCompact = NSSize(width: 820, height: 680)
-        static let minimumStatusItemLength: CGFloat = 60
+        static let minimumStatusItemLength: CGFloat = 28
         static let maximumStatusItemLength: CGFloat = 760
         static let fallbackStatusSymbolName = "waveform.path.ecg"
     }
@@ -189,6 +190,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         bindViewModel()
         observeSettingsRequests()
         ensureStatusItem()
+        showPopoverAfterInitialLaunch()
         showPopoverForVerificationIfRequested()
     }
 
@@ -246,17 +248,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.action = #selector(togglePopover(_:))
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         button.lineBreakMode = .byTruncatingTail
-        let symbolConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
-        let fallbackImage = NSImage(systemSymbolName: Constants.fallbackStatusSymbolName, accessibilityDescription: "NetworkMenuMonitor")?
-            .withSymbolConfiguration(symbolConfig)
-        fallbackImage?.isTemplate = true
-        button.image = fallbackImage
-        button.imagePosition = .imageLeading
+        button.image = nil
         button.title = ""
         button.attributedTitle = NSAttributedString(string: "")
 
         let contentView = StatusItemContentView(frame: .zero)
-        contentView.isHidden = true
+        contentView.isHidden = false
+        button.addSubview(contentView)
+        NSLayoutConstraint.activate([
+            contentView.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 3),
+            contentView.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -3),
+            contentView.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+            contentView.heightAnchor.constraint(equalToConstant: 18)
+        ])
         statusItemContentView = contentView
         updateStatusItemTitle()
 
@@ -433,7 +437,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let controller = NSHostingController(rootView: SettingsView(viewModel: viewModel))
         let window = NSWindow(contentViewController: controller)
-        window.title = "NetworkMenuMonitor Settings"
+        window.title = "MacResourceBar Settings"
         window.styleMask = [.titled, .closable, .miniaturizable]
         window.isReleasedWhenClosed = false
         window.setContentSize(NSSize(width: 460, height: 520))
@@ -468,6 +472,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func showPopoverAfterInitialLaunch() {
+        guard ProcessInfo.processInfo.environment["MAC_RESOURCE_BAR_START_HIDDEN"] != "1" else { return }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self, !self.popover.isShown else { return }
+            self.ensureStatusItem()
+            self.showPopover()
+        }
+    }
+
     private func updatePopoverSize() {
         popover.contentSize = Constants.popoverSizeCompact
         pinPopoverPositionIfNeeded()
@@ -498,31 +512,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             partial[metric] = viewModel.trayText(for: metric)
         }
 
-        var segments: [String] = []
-        if viewModel.highRefreshEnabled {
-            segments.append("HR")
-        }
-        segments.append(contentsOf: visibleMetrics.compactMap { textByMetric[$0] })
-
-        let title = segments.joined(separator: " ")
-        let font = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular)
-        let displayTitle = " \(title)"
-        let titleAttributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: NSColor.labelColor
-        ]
-        let attributedTitle = NSAttributedString(
-            string: displayTitle,
-            attributes: titleAttributes
+        statusItemContentView?.update(
+            orderedMetrics: visibleMetrics,
+            textByMetric: textByMetric,
+            showHighRefreshBadge: viewModel.highRefreshEnabled
         )
 
-        statusItemContentView?.isHidden = true
-        statusItem?.button?.title = displayTitle
-        statusItem?.button?.imagePosition = .imageLeading
-        statusItem?.button?.attributedTitle = attributedTitle
-        if !popover.isShown {
-            let imageWidth = statusItem?.button?.image?.size.width ?? 0
-            let measuredWidth = ceil(attributedTitle.size().width + imageWidth + 22)
+        statusItemContentView?.isHidden = false
+        statusItem?.button?.title = ""
+        statusItem?.button?.attributedTitle = NSAttributedString(string: "")
+        statusItem?.button?.image = nil
+        if !popover.isShown || force {
+            let measuredWidth = ceil((statusItemContentView?.requiredWidth() ?? 0) + 6)
             statusItem?.length = min(
                 max(measuredWidth, Constants.minimumStatusItemLength),
                 Constants.maximumStatusItemLength

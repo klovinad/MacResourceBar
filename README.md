@@ -1,6 +1,21 @@
-# NetworkMenuMonitor
+# MacResourceBar
 
-Native macOS menu bar resource monitor for system totals and per-application activity.
+Native macOS menu bar resource monitor for CPU, RAM, temperature, disk, external disk, network totals, and per-application activity.
+
+[Download the latest DMG](https://github.com/klovinad/MacResourceBar/releases/download/v1.0/MacResourceBar-1.0.dmg)
+
+![MacResourceBar screenshot](Docs/macresourcebar-screenshot.png)
+
+MacResourceBar lives in your menu bar and opens a compact resource dashboard when you click it. It is built for quickly spotting what is using CPU, memory, disk, and network without opening Activity Monitor.
+
+## Install
+
+1. Download [`MacResourceBar-1.0.dmg`](https://github.com/klovinad/MacResourceBar/releases/download/v1.0/MacResourceBar-1.0.dmg).
+2. Open the DMG.
+3. Drag `MacResourceBar.app` into `Applications`.
+4. Launch it from `Applications`.
+
+The current public build is ad-hoc signed because no Apple Developer ID certificate is configured yet. macOS may show a Gatekeeper warning on first launch.
 
 ## Current MVP
 
@@ -72,7 +87,7 @@ From this directory:
 ./script/build_and_run.sh --verify
 ```
 
-The script builds the `NetworkMenuMonitor` Xcode scheme in Debug, launches the built app, and verifies that the process is running. The Codex app Run action is wired to the same script.
+The script builds the `NetworkMenuMonitor` Xcode scheme in Debug, launches `MacResourceBar.app`, and verifies that the process is running. The Codex app Run action is wired to the same script.
 
 ## Package DMG
 
@@ -82,7 +97,7 @@ To build a Release app bundle and compressed DMG:
 ./script/package_dmg.sh
 ```
 
-The script writes `Release/NetworkMenuMonitor-1.0.dmg` and a copied app bundle at `Release/NetworkMenuMonitor.app`. The current local build is ad-hoc signed because no Developer ID team is configured; public internet distribution will still need Developer ID signing and notarization to avoid Gatekeeper warnings.
+The script writes `Release/MacResourceBar-1.0.dmg` and a copied app bundle at `Release/MacResourceBar.app`. Public internet distribution will still need Developer ID signing and notarization to avoid Gatekeeper warnings.
 
 ## Project Structure
 

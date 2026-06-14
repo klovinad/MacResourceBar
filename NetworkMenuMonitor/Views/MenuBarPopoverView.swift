@@ -25,7 +25,7 @@ struct MenuBarPopoverView: View {
     private var header: some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Resource Monitor")
+                Text("MacResourceBar")
                     .font(.headline)
                 Text(viewModel.highRefreshEnabled ? "Updating every second" : "Updating every 10 seconds")
                     .font(.caption)
