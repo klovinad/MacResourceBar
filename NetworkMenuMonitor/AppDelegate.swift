@@ -161,7 +161,7 @@ private final class StatusItemContentView: NSView {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private enum Constants {
         static let popoverSizeExpanded = NSSize(width: 820, height: 720)
-        static let popoverSizeCompact = NSSize(width: 820, height: 520)
+        static let popoverSizeCompact = NSSize(width: 820, height: 680)
         static let minimumStatusItemLength: CGFloat = 60
         static let maximumStatusItemLength: CGFloat = 760
         static let fallbackStatusSymbolName = "waveform.path.ecg"
@@ -175,6 +175,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarTitleObserver: AnyCancellable?
     private var popoverLayoutObserver: AnyCancellable?
     private var trayOrderingObserver: AnyCancellable?
+    private var settingsObserver: NSObjectProtocol?
+    private var settingsWindow: NSWindow?
     private var pinnedPopoverMinX: CGFloat?
     private var pinnedPopoverTopY: CGFloat?
 
@@ -185,6 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         configurePopover()
         bindViewModel()
+        observeSettingsRequests()
         ensureStatusItem()
         showPopoverForVerificationIfRequested()
     }
@@ -195,6 +198,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         viewModel.stopMonitoring()
+        if let settingsObserver {
+            NotificationCenter.default.removeObserver(settingsObserver)
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -290,9 +296,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusMenu.addItem(refreshItem)
         statusMenu.addItem(.separator())
         statusMenu.addItem(
-            withTitle: "Show",
+            withTitle: "Show Popover",
             action: #selector(togglePopoverFromMenu(_:)),
             keyEquivalent: ""
+        )
+        statusMenu.addItem(
+            withTitle: "Settings…",
+            action: #selector(openSettings(_:)),
+            keyEquivalent: ","
         )
         statusMenu.addItem(.separator())
         statusMenu.addItem(
@@ -313,11 +324,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popoverLayoutObserver = viewModel.$appSnapshots
             .combineLatest(
                 viewModel.$appDisplayThresholdBytesPerSecond,
-                viewModel.$perAppStatusMessage,
-                viewModel.$showAllInfo
+                viewModel.$perAppStatusMessage
             )
             .receive(on: RunLoop.main)
-            .sink { [weak self] _, _, _, _ in
+            .sink { [weak self] _, _, _ in
                 self?.updatePopoverSize()
             }
 
@@ -379,6 +389,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc
+    private func openSettings(_ sender: AnyObject?) {
+        showSettingsWindow()
+    }
+
+    @objc
     private func toggleLaunchAtLoginFromMenu(_ sender: AnyObject?) {
         viewModel.setLaunchAtLoginEnabled(!viewModel.launchAtLoginEnabled)
         updateStatusMenu()
@@ -394,7 +409,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateStatusMenu() {
         statusMenu.item(at: 0)?.state = viewModel.launchAtLoginEnabled ? .on : .off
         statusMenu.item(at: 1)?.state = viewModel.highRefreshEnabled ? .on : .off
-        statusMenu.item(at: 3)?.title = popover.isShown ? "Hide" : "Show"
+        statusMenu.item(at: 3)?.title = popover.isShown ? "Hide Popover" : "Show Popover"
+    }
+
+    private func observeSettingsRequests() {
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: .networkMenuMonitorOpenSettings,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.showSettingsWindow()
+            }
+        }
+    }
+
+    private func showSettingsWindow() {
+        if let settingsWindow {
+            settingsWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let controller = NSHostingController(rootView: SettingsView(viewModel: viewModel))
+        let window = NSWindow(contentViewController: controller)
+        window.title = "NetworkMenuMonitor Settings"
+        window.styleMask = [.titled, .closable, .miniaturizable]
+        window.isReleasedWhenClosed = false
+        window.setContentSize(NSSize(width: 460, height: 520))
+        window.center()
+        settingsWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func showPopover() {

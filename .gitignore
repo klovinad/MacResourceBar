@@ -4,6 +4,7 @@
 Release/
 DerivedData/
 build/
+build-release/
 *.xcworkspace/xcuserdata/
 *.xcuserdatad/
 *.xcuserstate

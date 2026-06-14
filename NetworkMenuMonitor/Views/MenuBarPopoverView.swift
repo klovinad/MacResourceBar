@@ -8,11 +8,13 @@ struct MenuBarPopoverView: View {
     private let tableMaxHeight: CGFloat = 360
     private let tableVisibleRowLimit = 120
     private let tableScrollbarReserve: CGFloat = 16
+    private let historyColumns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
             systemSummary
+            historySummary
             appTableControls
             Divider()
             content
@@ -43,6 +45,15 @@ struct MenuBarPopoverView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
+
+            Button {
+                NotificationCenter.default.post(name: .networkMenuMonitorOpenSettings, object: nil)
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help("Settings")
         }
     }
 
@@ -50,6 +61,19 @@ struct MenuBarPopoverView: View {
         HStack(spacing: 8) {
             ForEach(viewModel.orderedTrayMetricsForPopover) { metric in
                 metricChip(metric)
+            }
+        }
+    }
+
+    private var historySummary: some View {
+        LazyVGrid(columns: historyColumns, alignment: .leading, spacing: 8) {
+            ForEach(viewModel.orderedTrayMetricsForPopover) { metric in
+                HistorySparkline(
+                    title: metricTitle(for: metric),
+                    value: metricValue(for: metric),
+                    samples: historySamples(for: metric),
+                    color: historyColor(for: metric)
+                )
             }
         }
     }
@@ -264,7 +288,7 @@ struct MenuBarPopoverView: View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(snapshots.prefix(tableVisibleRowLimit))) { snapshot in
                 AppResourceRow(snapshot: snapshot) {
-                    viewModel.terminateProcess(snapshot)
+                    confirmTermination(of: snapshot)
                 }
                 .frame(height: 44)
 
@@ -378,6 +402,54 @@ struct MenuBarPopoverView: View {
         case .disk: "internaldrive"
         case .externalDisk: "externaldrive"
         }
+    }
+
+    private func historySamples(for metric: MenuBarViewModel.TrayMetric) -> [Double] {
+        switch metric {
+        case .network:
+            viewModel.historySamples.map(\.networkBytesPerSecond)
+        case .cpu:
+            viewModel.historySamples.map(\.cpuUsagePercent)
+        case .cpuTemp:
+            viewModel.historySamples.compactMap(\.cpuTemperatureCelsius)
+        case .memory:
+            viewModel.historySamples.map(\.memoryUsagePercent)
+        case .disk:
+            viewModel.historySamples.map(\.diskBytesPerSecond)
+        case .externalDisk:
+            viewModel.historySamples.map(\.externalDiskBytesPerSecond)
+        }
+    }
+
+    private func historyColor(for metric: MenuBarViewModel.TrayMetric) -> Color {
+        switch metric {
+        case .network:
+            .accentColor
+        case .cpu:
+            .orange
+        case .cpuTemp:
+            .red
+        case .memory:
+            .green
+        case .disk:
+            .purple
+        case .externalDisk:
+            .blue
+        }
+    }
+
+    private func confirmTermination(of snapshot: AppResourceSnapshot) {
+        let alert = NSAlert()
+        alert.messageText = "Terminate \(snapshot.displayName)?"
+        alert.informativeText = snapshot.pids.count == 1
+            ? "This sends SIGTERM to PID \(snapshot.pids[0])."
+            : "This sends SIGTERM to \(snapshot.pids.count) related processes."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Terminate")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        viewModel.terminateProcess(snapshot)
     }
 }
 
@@ -543,5 +615,77 @@ private struct AppResourceRow: View {
 
     private static func rateText(_ bytesPerSecond: Double) -> String {
         ByteRateFormatter.stableMenuRate(for: bytesPerSecond, preferredUnitIndex: nil).text
+    }
+}
+
+private struct HistorySparkline: View {
+    let title: String
+    let value: String
+    let samples: [Double]
+    let color: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Text(title)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                Spacer(minLength: 0)
+
+                Text(value)
+                    .font(.caption2.monospacedDigit())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+
+            Sparkline(samples: samples, color: color)
+                .frame(height: 30)
+        }
+        .padding(.vertical, 7)
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private struct Sparkline: View {
+    let samples: [Double]
+    let color: Color
+
+    var body: some View {
+        Canvas { context, size in
+            let values = samples.suffix(90)
+            guard values.count > 1 else {
+                drawBaseline(in: &context, size: size)
+                return
+            }
+
+            let maxValue = max(values.max() ?? 0, 1)
+            let stepX = size.width / CGFloat(max(values.count - 1, 1))
+            var path = Path()
+
+            for (index, value) in values.enumerated() {
+                let x = CGFloat(index) * stepX
+                let ratio = CGFloat(min(max(value / maxValue, 0), 1))
+                let y = size.height - (ratio * size.height)
+
+                if index == 0 {
+                    path.move(to: CGPoint(x: x, y: y))
+                } else {
+                    path.addLine(to: CGPoint(x: x, y: y))
+                }
+            }
+
+            drawBaseline(in: &context, size: size)
+            context.stroke(path, with: .color(color), lineWidth: 1.6)
+        }
+    }
+
+    private func drawBaseline(in context: inout GraphicsContext, size: CGSize) {
+        var baseline = Path()
+        baseline.move(to: CGPoint(x: 0, y: size.height - 0.5))
+        baseline.addLine(to: CGPoint(x: size.width, y: size.height - 0.5))
+        context.stroke(baseline, with: .color(.secondary.opacity(0.22)), lineWidth: 1)
     }
 }

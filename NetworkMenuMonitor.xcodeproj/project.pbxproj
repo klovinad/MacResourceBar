@@ -21,6 +21,12 @@
 		C00100010000000000000002 /* MemoryProcessMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00100010000000000000002 /* MemoryProcessMonitor.swift */; };
 		C00100010000000000000003 /* DiskProcessMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00100010000000000000003 /* DiskProcessMonitor.swift */; };
 		C00100010000000000000004 /* AppResourceMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00100010000000000000004 /* AppResourceMonitor.swift */; };
+		C00100010000000000000005 /* SystemMetricsMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00100010000000000000005 /* SystemMetricsMonitor.swift */; };
+		C00100010000000000000006 /* AppSnapshotFilterState.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00100010000000000000006 /* AppSnapshotFilterState.swift */; };
+		C00100010000000000000007 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00100010000000000000007 /* SettingsView.swift */; };
+		C00100010000000000000008 /* ResourceHistorySample.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00100010000000000000008 /* ResourceHistorySample.swift */; };
+		C00100010000000000000009 /* MenuBarPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00100010000000000000009 /* MenuBarPreferences.swift */; };
+		C0010001000000000000000A /* AppNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0010001000000000000000A /* AppNotifications.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -40,6 +46,12 @@
 		D00100010000000000000002 /* MemoryProcessMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryProcessMonitor.swift; sourceTree = "<group>"; };
 		D00100010000000000000003 /* DiskProcessMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskProcessMonitor.swift; sourceTree = "<group>"; };
 		D00100010000000000000004 /* AppResourceMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppResourceMonitor.swift; sourceTree = "<group>"; };
+		D00100010000000000000005 /* SystemMetricsMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemMetricsMonitor.swift; sourceTree = "<group>"; };
+		D00100010000000000000006 /* AppSnapshotFilterState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSnapshotFilterState.swift; sourceTree = "<group>"; };
+		D00100010000000000000007 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		D00100010000000000000008 /* ResourceHistorySample.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourceHistorySample.swift; sourceTree = "<group>"; };
+		D00100010000000000000009 /* MenuBarPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarPreferences.swift; sourceTree = "<group>"; };
+		D0010001000000000000000A /* AppNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppNotifications.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -89,6 +101,7 @@
 			isa = PBXGroup;
 			children = (
 				A00100010000000000000012 /* AppResourceSnapshot.swift */,
+				D00100010000000000000008 /* ResourceHistorySample.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -102,6 +115,7 @@
 				D00100010000000000000002 /* MemoryProcessMonitor.swift */,
 				D00100010000000000000003 /* DiskProcessMonitor.swift */,
 				D00100010000000000000004 /* AppResourceMonitor.swift */,
+				D00100010000000000000005 /* SystemMetricsMonitor.swift */,
 				A00100010000000000000015 /* NetworkTotalsMonitor.swift */,
 			);
 			path = Services;
@@ -110,6 +124,7 @@
 		A00100010000000000000035 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
+				D0010001000000000000000A /* AppNotifications.swift */,
 				A00100010000000000000016 /* ByteRateFormatter.swift */,
 			);
 			path = Utilities;
@@ -119,6 +134,8 @@
 			isa = PBXGroup;
 			children = (
 				A00100010000000000000017 /* MenuBarViewModel.swift */,
+				D00100010000000000000006 /* AppSnapshotFilterState.swift */,
+				D00100010000000000000009 /* MenuBarPreferences.swift */,
 			);
 			path = ViewModels;
 			sourceTree = "<group>";
@@ -127,6 +144,7 @@
 			isa = PBXGroup;
 			children = (
 				A00100010000000000000018 /* MenuBarPopoverView.swift */,
+				D00100010000000000000007 /* SettingsView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -211,6 +229,12 @@
 				C00100010000000000000002 /* MemoryProcessMonitor.swift in Sources */,
 				C00100010000000000000003 /* DiskProcessMonitor.swift in Sources */,
 				C00100010000000000000004 /* AppResourceMonitor.swift in Sources */,
+				C00100010000000000000005 /* SystemMetricsMonitor.swift in Sources */,
+				C00100010000000000000006 /* AppSnapshotFilterState.swift in Sources */,
+				C00100010000000000000007 /* SettingsView.swift in Sources */,
+				C00100010000000000000008 /* ResourceHistorySample.swift in Sources */,
+				C00100010000000000000009 /* MenuBarPreferences.swift in Sources */,
+				C0010001000000000000000A /* AppNotifications.swift in Sources */,
 			A00100010000000000000001 /* NetworkMenuMonitorApp.swift in Sources */,
 			A00100010000000000000005 /* NetworkTotalsMonitor.swift in Sources */,
 		);
@@ -252,6 +276,7 @@
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = YES;

@@ -12,9 +12,11 @@ Native macOS menu bar resource monitor for system totals and per-application act
   - CPU temperature when available
   - External disk activity when available
 - Left click opens the popover.
-- Right click opens the context menu with launch-at-login, high refresh, show/hide, and quit.
+- Right click opens the context menu with launch-at-login, high refresh, show/hide, settings, and quit.
 - High refresh samples totals, system metrics, and per-app data roughly every second.
-- Low refresh slows total/system metrics and pauses per-app monitoring to reduce overhead.
+- Low refresh slows total/system metrics and per-app monitoring to reduce overhead.
+- Popover sparklines show recent network, CPU, RAM, and disk activity for the current app session.
+- Settings window exposes persistent launch, refresh, tray metric, table filter, sort, and threshold preferences.
 - Popover app table shows:
   - app icon/name
   - CPU
@@ -28,6 +30,7 @@ Native macOS menu bar resource monitor for system totals and per-application act
   - search by app name
   - Active only
   - Show helpers
+- Terminating an app row asks for confirmation before sending `SIGTERM`.
 - Helper grouping is best-effort. With Show helpers off, common Chrome, Electron, generic Helper, and WebKit/Safari helper rows are grouped under a parent app name where the process name makes that possible.
 
 ## Data Sources
@@ -38,7 +41,10 @@ Native macOS menu bar resource monitor for system totals and per-application act
 - `MemoryProcessMonitor`: samples resident memory from `proc_pidinfo`.
 - `DiskProcessMonitor`: samples per-process disk I/O from `proc_pid_rusage`.
 - `AppResourceMonitor`: merges CPU/RAM/disk/network samples into `AppResourceSnapshot`.
-- `MenuBarViewModel`: applies filtering, grouping, sorting, thresholding, and menu bar formatting.
+- `SystemMetricsMonitor`: samples CPU, memory, disk, CPU temperature, and external disk activity.
+- `AppSnapshotFilterState`: applies filtering, grouping, sorting, and thresholding for app rows.
+- `MenuBarPreferences`: centralizes persisted `UserDefaults` keys and defaults.
+- `MenuBarViewModel`: owns menu bar state, runtime history, monitor wiring, and menu bar formatting.
 
 ## Measurement Notes
 
@@ -68,18 +74,30 @@ From this directory:
 
 The script builds the `NetworkMenuMonitor` Xcode scheme in Debug, launches the built app, and verifies that the process is running. The Codex app Run action is wired to the same script.
 
+## Package DMG
+
+To build a Release app bundle and compressed DMG:
+
+```bash
+./script/package_dmg.sh
+```
+
+The script writes `Release/NetworkMenuMonitor-1.0.dmg` and a copied app bundle at `Release/NetworkMenuMonitor.app`. The current local build is ad-hoc signed because no Developer ID team is configured; public internet distribution will still need Developer ID signing and notarization to avoid Gatekeeper warnings.
+
 ## Project Structure
 
 ```text
 Network app/
 ├── .codex/environments/environment.toml
 ├── script/build_and_run.sh
+├── script/package_dmg.sh
 ├── NetworkMenuMonitor.xcodeproj/
 ├── NetworkMenuMonitor/
 │   ├── NetworkMenuMonitorApp.swift
 │   ├── AppDelegate.swift
 │   ├── Models/
-│   │   └── AppResourceSnapshot.swift
+│   │   ├── AppResourceSnapshot.swift
+│   │   └── ResourceHistorySample.swift
 │   ├── Services/
 │   │   ├── AppResourceMonitor.swift
 │   │   ├── CPUProcessMonitor.swift
@@ -87,13 +105,17 @@ Network app/
 │   │   ├── LaunchAtLoginService.swift
 │   │   ├── MemoryProcessMonitor.swift
 │   │   ├── NetTopProcessMonitor.swift
-│   │   └── NetworkTotalsMonitor.swift
+│   │   ├── NetworkTotalsMonitor.swift
+│   │   └── SystemMetricsMonitor.swift
 │   ├── Utilities/
 │   │   └── ByteRateFormatter.swift
 │   ├── ViewModels/
+│   │   ├── AppSnapshotFilterState.swift
+│   │   ├── MenuBarPreferences.swift
 │   │   └── MenuBarViewModel.swift
 │   └── Views/
-│       └── MenuBarPopoverView.swift
+│       ├── MenuBarPopoverView.swift
+│       └── SettingsView.swift
 └── README.md
 ```
 
