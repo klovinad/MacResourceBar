@@ -9,8 +9,7 @@
     { "idiom" : "mac", "size" : "256x256", "scale" : "1x", "filename" : "icon_256.png" },
     { "idiom" : "mac", "size" : "256x256", "scale" : "2x", "filename" : "icon_256x2.png" },
     { "idiom" : "mac", "size" : "512x512", "scale" : "1x", "filename" : "icon_512.png" },
-    { "idiom" : "mac", "size" : "512x512", "scale" : "2x", "filename" : "icon_512x2.png" },
-    { "idiom" : "mac", "size" : "1024x1024", "scale" : "1x", "filename" : "icon_1024.png" }
+    { "idiom" : "mac", "size" : "512x512", "scale" : "2x", "filename" : "icon_512x2.png" }
   ],
   "info" : { "author" : "xcode", "version" : 1 }
 }

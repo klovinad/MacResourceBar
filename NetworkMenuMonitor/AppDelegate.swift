@@ -160,9 +160,10 @@ private final class StatusItemContentView: NSView {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private enum Constants {
-        static let popoverSizeExpanded = NSSize(width: 380, height: 430)
-        static let popoverSizeCompact = NSSize(width: 380, height: 250)
+        static let popoverSizeExpanded = NSSize(width: 820, height: 720)
+        static let popoverSizeCompact = NSSize(width: 820, height: 520)
         static let minimumStatusItemLength: CGFloat = 60
+        static let maximumStatusItemLength: CGFloat = 760
         static let fallbackStatusSymbolName = "waveform.path.ecg"
     }
 
@@ -185,10 +186,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configurePopover()
         bindViewModel()
         ensureStatusItem()
+        showPopoverForVerificationIfRequested()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
         ensureStatusItem()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        viewModel.stopMonitoring()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -233,7 +239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.target = self
         button.action = #selector(togglePopover(_:))
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        button.lineBreakMode = .byTruncatingHead
+        button.lineBreakMode = .byTruncatingTail
         let symbolConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
         let fallbackImage = NSImage(systemSymbolName: Constants.fallbackStatusSymbolName, accessibilityDescription: "NetworkMenuMonitor")?
             .withSymbolConfiguration(symbolConfig)
@@ -338,7 +344,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 popover.performClose(sender)
             }
             updateStatusMenu()
-            statusItem?.popUpMenu(statusMenu)
+            if let button = statusItem?.button, let event = NSApp.currentEvent {
+                NSMenu.popUpContextMenu(statusMenu, with: event, for: button)
+            } else {
+                statusItem?.menu = statusMenu
+                statusItem?.button?.performClick(nil)
+            }
             return
         }
 
@@ -403,10 +414,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    private func showPopoverForVerificationIfRequested() {
+        guard ProcessInfo.processInfo.environment["NETWORK_MENU_MONITOR_SHOW_POPOVER"] == "1" else { return }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.showPopover()
+        }
+    }
+
     private func updatePopoverSize() {
-        popover.contentSize = viewModel.showAllInfo
-            ? Constants.popoverSizeExpanded
-            : Constants.popoverSizeCompact
+        popover.contentSize = Constants.popoverSizeCompact
         pinPopoverPositionIfNeeded()
     }
 
@@ -427,9 +444,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         var visibleMetrics = dedupedMetrics
-        if viewModel.highRefreshEnabled && !visibleMetrics.contains(.network) {
-            visibleMetrics.append(.network)
-        }
         if visibleMetrics.isEmpty {
             visibleMetrics = [.network]
         }
@@ -444,19 +458,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         segments.append(contentsOf: visibleMetrics.compactMap { textByMetric[$0] })
 
-        let title = segments.joined(separator: "  ")
-        statusItemContentView?.isHidden = true
-        statusItem?.button?.title = " \(title)"
-        statusItem?.button?.imagePosition = .imageLeading
-        statusItem?.button?.attributedTitle = NSAttributedString(
-            string: " \(title)",
-            attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular),
-                .foregroundColor: NSColor.labelColor
-            ]
+        let title = segments.joined(separator: " ")
+        let font = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular)
+        let displayTitle = " \(title)"
+        let titleAttributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.labelColor
+        ]
+        let attributedTitle = NSAttributedString(
+            string: displayTitle,
+            attributes: titleAttributes
         )
+
+        statusItemContentView?.isHidden = true
+        statusItem?.button?.title = displayTitle
+        statusItem?.button?.imagePosition = .imageLeading
+        statusItem?.button?.attributedTitle = attributedTitle
         if !popover.isShown {
-            statusItem?.length = NSStatusItem.variableLength
+            let imageWidth = statusItem?.button?.image?.size.width ?? 0
+            let measuredWidth = ceil(attributedTitle.size().width + imageWidth + 22)
+            statusItem?.length = min(
+                max(measuredWidth, Constants.minimumStatusItemLength),
+                Constants.maximumStatusItemLength
+            )
         }
         statusItem?.button?.needsLayout = true
         pinPopoverPositionIfNeeded()

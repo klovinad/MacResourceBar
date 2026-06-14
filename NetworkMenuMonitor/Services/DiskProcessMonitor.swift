@@ -19,10 +19,10 @@ final class DiskProcessMonitor {
     private var previousRUsageByPid: [pid_t: DiskSamplePoint] = [:]
     private var activePids: Set<pid_t> = []
 
-    func sample() -> [pid_t: DiskProcessSample] {
+    func sample(activePids: Set<pid_t>) -> [pid_t: DiskProcessSample] {
         var result: [pid_t: DiskProcessSample] = [:]
         let now = CFAbsoluteTimeGetCurrent()
-        activePids = Set(NSWorkspace.shared.runningApplications.compactMap { $0.processIdentifier })
+        self.activePids = activePids
 
         for pid in activePids {
             guard let usage = readUsage(for: pid) else { continue }

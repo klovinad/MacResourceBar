@@ -1,59 +1,92 @@
 # NetworkMenuMonitor
 
-## 1. Feasibility assessment
+Native macOS menu bar resource monitor for system totals and per-application activity.
 
-### What is feasible with standard public APIs
+## Current MVP
 
-- Accurate total download and upload throughput for the whole machine is feasible with public BSD/macOS networking APIs by reading interface byte counters via `getifaddrs`.
-- Per-process CPU, RAM and disk counters are available through process APIs such as `proc_pidinfo` and `proc_pid_rusage`.
-- A native menu bar app with SwiftUI, launch-at-login, and low/high refresh behavior is feasible with standard AppKit/SwiftUI/ServiceManagement APIs.
+- Menu bar status item with selectable system metrics:
+  - Network download/upload
+  - CPU
+  - RAM
+  - Disk activity
+  - CPU temperature when available
+  - External disk activity when available
+- Left click opens the popover.
+- Right click opens the context menu with launch-at-login, high refresh, show/hide, and quit.
+- High refresh samples totals, system metrics, and per-app data roughly every second.
+- Low refresh slows total/system metrics and pauses per-app monitoring to reduce overhead.
+- Popover app table shows:
+  - app icon/name
+  - CPU
+  - RAM
+  - disk read/write
+  - network down/up
+- Table controls:
+  - filters: All, CPU, Memory, Disk, Network
+  - sort: Total, CPU, RAM, Disk, Network, Name
+  - per-filter threshold picker
+  - search by app name
+  - Active only
+  - Show helpers
+- Helper grouping is best-effort. With Show helpers off, common Chrome, Electron, generic Helper, and WebKit/Safari helper rows are grouped under a parent app name where the process name makes that possible.
 
-### What is not cleanly feasible with standard public APIs
+## Data Sources
 
-- Live per-application network attribution is not exposed as a stable public API surface.
-- A fully accurate per-app monitor usually moves toward Network Extension, packet inspection, or other privileged/entitled architectures, especially if you need robust attribution across all traffic types and sandbox boundaries.
+- `NetworkTotalsMonitor`: public interface counters via `getifaddrs`.
+- `NetworkProcessMonitor`: launches `/usr/bin/nettop` and parses delta CSV output for best-effort per-process network activity.
+- `CPUProcessMonitor`: samples per-process CPU from `proc_pidinfo`.
+- `MemoryProcessMonitor`: samples resident memory from `proc_pidinfo`.
+- `DiskProcessMonitor`: samples per-process disk I/O from `proc_pid_rusage`.
+- `AppResourceMonitor`: merges CPU/RAM/disk/network samples into `AppResourceSnapshot`.
+- `MenuBarViewModel`: applies filtering, grouping, sorting, thresholding, and menu bar formatting.
 
-### Best realistic MVP
+## Measurement Notes
 
-- This MVP uses public APIs for total traffic.
-- Per-process network values are collected from `nettop` as best-effort data.
-- CPU and RAM are collected from `proc_pidinfo` and disk I/O from `proc_pid_rusage`.
-- All per-app metrics are merged in a single stream to render a unified resource table.
+- Per-app CPU is normalized to `0...100%` of total machine capacity, matching the system CPU scale shown in the menu bar. It is not Activity Monitor's `cores * 100` process scale.
+- Total sort uses normalized activity points so RAM does not dominate CPU, disk, and network simply because memory is measured in large byte counts.
+- Memory thresholds are byte counts.
+- Disk and network thresholds are byte-per-second rates.
+- All threshold is activity points.
 
-## 2. Recommended architecture
+## Limitations
 
-- `NetworkTotalsMonitor`: reads interface counters and computes total download/upload bytes per second.
-- `NetworkProcessMonitor` (`NetTopProcessMonitor.swift`): launches `/usr/bin/nettop`, parses CSV delta output, and emits per-process network rows.
-- `CPUProcessMonitor`: samples per-process CPU usage (`proc_pidinfo`).
-- `MemoryProcessMonitor`: samples per-process resident memory.
-- `DiskProcessMonitor`: samples per-process read/write activity (`proc_pid_rusage`).
-- `AppResourceMonitor`: aggregates CPU/RAM/disk/network per app and emits unified `AppResourceSnapshot` rows.
-- `MenuBarViewModel`: applies filtering, sorting, thresholding, and formats menu bar text.
-- SwiftUI views: show the menu bar extra and the resource table in the popover.
-- `LaunchAtLoginService`: wraps `SMAppService.mainApp`.
+- Per-app network attribution is best-effort because macOS does not expose a stable public API for live per-application network usage.
+- `nettop` output can vary by OS version and may omit, delay, or rename process rows.
+- The first `nettop` frame is discarded because it is a baseline, not an interval delta.
+- CPU/RAM/disk process APIs are sampled for currently visible running applications; daemons and background agents are not the main MVP target.
+- Helper grouping depends on process names and bundle metadata. It is intentionally heuristic.
+- CPU temperature is best-effort and may be unavailable on some Macs or macOS versions.
+- GPU monitoring is not part of the MVP.
 
-## 3. Full Xcode-ready source code
+## Build And Run
 
-The full source is in this repository under [`/Applications/Network app/NetworkMenuMonitor`](/Applications/Network%20app/NetworkMenuMonitor) with the project at [`/Applications/Network app/NetworkMenuMonitor.xcodeproj`](/Applications/Network app/NetworkMenuMonitor.xcodeproj).
+From this directory:
 
-## 4. Project structure by files and folders
+```bash
+./script/build_and_run.sh --verify
+```
+
+The script builds the `NetworkMenuMonitor` Xcode scheme in Debug, launches the built app, and verifies that the process is running. The Codex app Run action is wired to the same script.
+
+## Project Structure
 
 ```text
 Network app/
+├── .codex/environments/environment.toml
+├── script/build_and_run.sh
 ├── NetworkMenuMonitor.xcodeproj/
-│   └── project.pbxproj
 ├── NetworkMenuMonitor/
-│   ├── Info.plist
 │   ├── NetworkMenuMonitorApp.swift
+│   ├── AppDelegate.swift
 │   ├── Models/
 │   │   └── AppResourceSnapshot.swift
 │   ├── Services/
-│   │   ├── LaunchAtLoginService.swift
-│   │   ├── NetTopProcessMonitor.swift
-│   │   ├── CPUProcessMonitor.swift
-│   │   ├── MemoryProcessMonitor.swift
-│   │   ├── DiskProcessMonitor.swift
 │   │   ├── AppResourceMonitor.swift
+│   │   ├── CPUProcessMonitor.swift
+│   │   ├── DiskProcessMonitor.swift
+│   │   ├── LaunchAtLoginService.swift
+│   │   ├── MemoryProcessMonitor.swift
+│   │   ├── NetTopProcessMonitor.swift
 │   │   └── NetworkTotalsMonitor.swift
 │   ├── Utilities/
 │   │   └── ByteRateFormatter.swift
@@ -64,44 +97,6 @@ Network app/
 └── README.md
 ```
 
-## 5. Setup steps in Xcode
+## Privacy
 
-1. Open [`/Applications/Network app/NetworkMenuMonitor.xcodeproj`](/Applications/Network%20app/NetworkMenuMonitor.xcodeproj).
-2. Select the `NetworkMenuMonitor` target.
-3. Set your development team if you want to run it signed on your Mac.
-4. Build and run the `NetworkMenuMonitor` scheme.
-
-## 6. Launch-at-login implementation details
-
-- The app uses `SMAppService.mainApp`.
-- The popover contains a toggle that calls `register()` or `unregister()`.
-- This is the modern macOS approach for a normal app target and avoids the older helper-app login item pattern for this MVP.
-
-## 7. Permissions / entitlements / capabilities required
-
-- No special entitlements are required for the basic MVP.
-- No packet capture entitlement is used.
-- The total-throughput monitor uses standard interface counters.
-- Per-app network values depend on `/usr/bin/nettop`.
-- Per-app CPU/RAM/disk counters are obtained from process APIs for currently visible running applications.
-
-## 8. Known limitations
-
-- Per-app network values are best-effort based on `nettop` output and can change with OS versions.
-- Some rows represent helper processes instead of the parent branded app.
-- Process icons are resolved from `NSRunningApplication` when possible; background daemons may show a generic icon.
-- The first `nettop` sample is discarded because delta mode starts with baseline totals, not interval deltas.
-- Some rows may have delayed activity due to process lifecycle timing and polling cadence.
-- When `nettop` cannot launch or parse, the menu bar total still works and the popover shows an explanatory status.
-
-## 9. Naming
-
-- Product: `NetworkMenuMonitor`
-- Bundle ID: `com.networkmenumonitor.app`
-
-## 10. Next steps to evolve the MVP into a more accurate per-app monitor
-
-- Move per-app attribution to a privileged architecture such as a Network Extension or system extension design.
-- Correlate sockets more robustly to bundle identifiers and app groups.
-- Add historical charts and rolling averages for smoother readings.
-- Add user preferences for refresh rate, units, and hide-by-default rules.
+The MVP reads local system counters and process metadata on the Mac. It does not send telemetry or snapshots anywhere.

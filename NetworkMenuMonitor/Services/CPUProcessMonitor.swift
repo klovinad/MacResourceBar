@@ -3,19 +3,11 @@ import Darwin
 import AppKit
 
 final class CPUProcessMonitor {
-    private let queue = DispatchQueue(label: "NetworkMenuMonitor.CPUProcessMonitor")
     private var previousCPUByPid: [pid_t: CPUSamplePoint] = [:]
-    private var activePids: Set<pid_t> = []
-    private let sampleToPercentMultiplier: Double
 
-    init() {
-        sampleToPercentMultiplier = Double(max(ProcessInfo.processInfo.activeProcessorCount, 1))
-    }
-
-    func sample() -> [pid_t: Double] {
+    func sample(activePids: Set<pid_t>) -> [pid_t: Double] {
         let now = CFAbsoluteTimeGetCurrent()
         var result: [pid_t: Double] = [:]
-        activePids = Set(NSWorkspace.shared.runningApplications.compactMap { $0.processIdentifier })
 
         for pid in activePids {
             guard let taskInfo = readTaskInfo(for: pid) else { continue }
@@ -28,8 +20,7 @@ final class CPUProcessMonitor {
                         ? totalCPU - previous.totalCPUTime
                         : 0
                     let percent = (Double(delta) / (elapsed * 1_000_000_000)) * 100
-                    let maxPercent = sampleToPercentMultiplier * 100
-                    result[pid] = min(max(percent, 0), maxPercent)
+                    result[pid] = max(percent, 0)
                 }
             }
 

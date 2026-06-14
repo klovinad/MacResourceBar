@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import IOKit
 import IOKit.hidsystem
 import IOKit.storage
@@ -23,13 +24,18 @@ final class MenuBarViewModel: ObservableObject {
         static let trayMetricOrderKey = "trayMetricOrder"
         static let highRefreshEnabledKey = "highRefreshEnabled"
         static let appSortOrderKey = "appSortOrder"
+        static let appSearchTextKey = "appSearchText"
+        static let activeAppsOnlyKey = "activeAppsOnly"
+        static let showHelperProcessesKey = "showHelperProcesses"
     }
 
     private enum RefreshProfile {
         static let highTotalsInterval: TimeInterval = 1
-        static let lowTotalsInterval: TimeInterval = 5
+        static let lowTotalsInterval: TimeInterval = 10
         static let highSystemInterval: TimeInterval = 1
         static let lowSystemInterval: TimeInterval = 10
+        static let highAppInterval: TimeInterval = 1
+        static let lowAppInterval: TimeInterval = 10
     }
 
     enum AppSortOrder: String, CaseIterable {
@@ -104,6 +110,9 @@ final class MenuBarViewModel: ObservableObject {
     @Published private(set) var appResourceFilter: AppResourceFilter
     @Published var showAllInfo: Bool
     @Published var highRefreshEnabled: Bool
+    @Published var appSearchText: String
+    @Published var activeAppsOnly: Bool
+    @Published var showHelperProcesses: Bool
     @Published private(set) var appSortOrder: AppSortOrder
     @Published private(set) var selectedTrayMetrics: [TrayMetric]
     @Published private(set) var trayMetricOrder: [TrayMetric]
@@ -118,6 +127,12 @@ final class MenuBarViewModel: ObservableObject {
     private var preferredUploadUnitIndex = 2
     private var menuBarDownloadTitle = "0.0MB/s"
     private var menuBarUploadTitle = "0.0MB/s"
+    private static let memoryFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .memory
+        formatter.isAdaptive = true
+        return formatter
+    }()
 
     let resourceThresholdOptions: [Double] = [
         0,
@@ -140,6 +155,16 @@ final class MenuBarViewModel: ObservableObject {
         100
     ]
 
+    let totalActivityThresholdOptions: [Double] = [
+        0,
+        1,
+        5,
+        10,
+        25,
+        50,
+        100
+    ]
+
     let memoryThresholdOptions: [Double] = [
         0,
         16 * 1024 * 1024,
@@ -155,7 +180,7 @@ final class MenuBarViewModel: ObservableObject {
         appResourceFilter = AppResourceFilter(rawValue: UserDefaults.standard.string(forKey: Preferences.appResourceFilterKey) ?? "") ?? .all
         appSortOrder = AppSortOrder(rawValue: UserDefaults.standard.string(forKey: Preferences.appSortOrderKey) ?? "") ?? .totalRate
         if UserDefaults.standard.object(forKey: Preferences.showAllInfoKey) == nil {
-            showAllInfo = true
+            showAllInfo = false
         } else {
             showAllInfo = UserDefaults.standard.bool(forKey: Preferences.showAllInfoKey)
         }
@@ -163,6 +188,17 @@ final class MenuBarViewModel: ObservableObject {
             highRefreshEnabled = true
         } else {
             highRefreshEnabled = UserDefaults.standard.bool(forKey: Preferences.highRefreshEnabledKey)
+        }
+        appSearchText = UserDefaults.standard.string(forKey: Preferences.appSearchTextKey) ?? ""
+        if UserDefaults.standard.object(forKey: Preferences.activeAppsOnlyKey) == nil {
+            activeAppsOnly = true
+        } else {
+            activeAppsOnly = UserDefaults.standard.bool(forKey: Preferences.activeAppsOnlyKey)
+        }
+        if UserDefaults.standard.object(forKey: Preferences.showHelperProcessesKey) == nil {
+            showHelperProcesses = false
+        } else {
+            showHelperProcesses = UserDefaults.standard.bool(forKey: Preferences.showHelperProcessesKey)
         }
         let storedOrder = (UserDefaults.standard.string(forKey: Preferences.trayMetricOrderKey) ?? "")
             .split(separator: ",")
@@ -240,8 +276,13 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     var filteredAppSnapshots: [AppResourceSnapshot] {
-        appSnapshots
-            .filter { isAppActive($0) }
+        let search = appSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return appTableSnapshots
+            .filter { snapshot in
+                search.isEmpty || snapshot.displayName.localizedCaseInsensitiveContains(search)
+            }
+            .filter { self.isAppActive($0) }
             .sorted { lhs, rhs in
                 switch appSortOrder {
                 case .totalRate:
@@ -282,19 +323,23 @@ final class MenuBarViewModel: ObservableObject {
         let options = thresholdOptions(for: filter)
         if !options.contains(appDisplayThresholdBytesPerSecond) {
             appDisplayThresholdBytesPerSecond = options.first ?? 0
+            UserDefaults.standard.set(appDisplayThresholdBytesPerSecond, forKey: Preferences.appResourceThresholdKey)
         }
     }
 
     var thresholdDescription: String {
         switch appResourceFilter {
-        case .all, .disk, .network:
+        case .all:
+            if appDisplayThresholdBytesPerSecond <= 0 { return "Off" }
+            return String(format: "%.0f activity pts", appDisplayThresholdBytesPerSecond)
+        case .disk, .network:
             return ByteRateFormatter.thresholdString(for: appDisplayThresholdBytesPerSecond)
         case .cpu:
             if appDisplayThresholdBytesPerSecond <= 0 { return "Off" }
             return "\(Int(appDisplayThresholdBytesPerSecond)) %"
         case .memory:
             if appDisplayThresholdBytesPerSecond <= 0 { return "Off" }
-            return ByteRateFormatter.thresholdString(for: appDisplayThresholdBytesPerSecond)
+            return Self.memoryFormatter.string(fromByteCount: Int64(appDisplayThresholdBytesPerSecond))
         }
     }
 
@@ -302,17 +347,44 @@ final class MenuBarViewModel: ObservableObject {
         thresholdOptions(for: appResourceFilter)
     }
 
+    var visiblePerAppStatusMessage: String? {
+        perAppStatusMessage
+    }
+
     var filteredAppCountText: String {
-        "\(filteredAppSnapshots.count) of \(appSnapshots.count)"
+        let tableSnapshots = appTableSnapshots
+        let search = appSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let filteredCount = tableSnapshots
+            .lazy
+            .filter { snapshot in
+                search.isEmpty || snapshot.displayName.localizedCaseInsensitiveContains(search)
+            }
+            .filter { self.isAppActive($0) }
+            .count
+        return "\(filteredCount) of \(tableSnapshots.count)"
+    }
+
+    var searchMatchCountText: String? {
+        let search = appSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !search.isEmpty else { return nil }
+
+        let matchCount = appTableSnapshots
+            .lazy
+            .filter { $0.displayName.localizedCaseInsensitiveContains(search) }
+            .count
+
+        return "\(matchCount) matches"
     }
 
     private func thresholdOptions(for filter: AppResourceFilter) -> [Double] {
         switch filter {
+        case .all:
+            return totalActivityThresholdOptions
         case .cpu:
             return cpuThresholdOptions
         case .memory:
             return memoryThresholdOptions
-        case .all, .disk, .network:
+        case .disk, .network:
             return resourceThresholdOptions
         }
     }
@@ -333,8 +405,59 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     private func isAppActive(_ snapshot: AppResourceSnapshot) -> Bool {
+        guard activeAppsOnly else { return true }
         let threshold = appDisplayThresholdBytesPerSecond
         return activityValue(for: snapshot) >= threshold
+    }
+
+    var appTableSnapshots: [AppResourceSnapshot] {
+        showHelperProcesses ? appSnapshots : groupedAppSnapshots()
+    }
+
+    private func groupedAppSnapshots() -> [AppResourceSnapshot] {
+        var grouped: [String: AppResourceSnapshot] = [:]
+
+        for snapshot in appSnapshots {
+            let displayName = snapshot.groupedDisplayName
+            let key = snapshot.bundleIdentifier ?? displayName.lowercased()
+
+            guard let current = grouped[key] else {
+                grouped[key] = AppResourceSnapshot(
+                    processName: displayName,
+                    pid: snapshot.isHelperProcess ? nil : snapshot.pid,
+                    pids: snapshot.pids,
+                    bundleIdentifier: snapshot.bundleIdentifier,
+                    icon: snapshot.icon,
+                    cpuUsagePercent: snapshot.cpuUsagePercent,
+                    ramBytes: snapshot.ramBytes,
+                    diskReadBytesPerSecond: snapshot.diskReadBytesPerSecond,
+                    diskWriteBytesPerSecond: snapshot.diskWriteBytesPerSecond,
+                    downloadBytesPerSecond: snapshot.downloadBytesPerSecond,
+                    uploadBytesPerSecond: snapshot.uploadBytesPerSecond,
+                    isApproximation: snapshot.isApproximation,
+                    childProcessCount: snapshot.childProcessCount
+                )
+                continue
+            }
+
+            grouped[key] = AppResourceSnapshot(
+                processName: current.displayName,
+                pid: nil,
+                pids: Array(Set(current.pids + snapshot.pids)).sorted(),
+                bundleIdentifier: current.bundleIdentifier ?? snapshot.bundleIdentifier,
+                icon: current.icon ?? snapshot.icon,
+                cpuUsagePercent: current.cpuUsagePercent + snapshot.cpuUsagePercent,
+                ramBytes: current.ramBytes + snapshot.ramBytes,
+                diskReadBytesPerSecond: current.diskReadBytesPerSecond + snapshot.diskReadBytesPerSecond,
+                diskWriteBytesPerSecond: current.diskWriteBytesPerSecond + snapshot.diskWriteBytesPerSecond,
+                downloadBytesPerSecond: current.downloadBytesPerSecond + snapshot.downloadBytesPerSecond,
+                uploadBytesPerSecond: current.uploadBytesPerSecond + snapshot.uploadBytesPerSecond,
+                isApproximation: current.isApproximation || snapshot.isApproximation,
+                childProcessCount: current.childProcessCount + snapshot.childProcessCount
+            )
+        }
+
+        return Array(grouped.values)
     }
 
     func trayMetricEnabled(_ metric: TrayMetric) -> Bool {
@@ -435,6 +558,33 @@ final class MenuBarViewModel: ObservableObject {
         applyRefreshMode()
     }
 
+    func setAppSearchText(_ text: String) {
+        appSearchText = text
+        UserDefaults.standard.set(text, forKey: Preferences.appSearchTextKey)
+    }
+
+    func setActiveAppsOnly(_ enabled: Bool) {
+        activeAppsOnly = enabled
+        UserDefaults.standard.set(enabled, forKey: Preferences.activeAppsOnlyKey)
+    }
+
+    func setShowHelperProcesses(_ enabled: Bool) {
+        showHelperProcesses = enabled
+        UserDefaults.standard.set(enabled, forKey: Preferences.showHelperProcessesKey)
+    }
+
+    func terminateProcess(_ snapshot: AppResourceSnapshot) {
+        for pid in snapshot.pids {
+            kill(pid, SIGTERM)
+        }
+    }
+
+    func stopMonitoring() {
+        totalsMonitor.stop()
+        appResourceMonitor.stop()
+        systemMetricsMonitor.stop()
+    }
+
     var selectedTrayMetricsSummary: String {
         if selectedTrayMetrics.isEmpty {
             return "Network"
@@ -522,6 +672,28 @@ final class MenuBarViewModel: ObservableObject {
         }
     }
 
+    func compactTrayText(for metric: TrayMetric) -> String {
+        switch metric {
+        case .network:
+            return "\(compactMenuRate(menuBarDownloadTitle))↓ \(compactMenuRate(menuBarUploadTitle))↑"
+        case .cpu:
+            return String(format: "C%.0f", cpuUsagePercent)
+        case .cpuTemp:
+            guard let cpuTemperatureCelsius else { return "T--" }
+            return String(format: "%.0f°", cpuTemperatureCelsius)
+        case .memory:
+            return String(format: "R%.0f", memoryUsagePercent)
+        case .disk:
+            return "D\(compactMenuRate(formattedDiskRate(precision: 1, compact: true)))"
+        case .externalDisk:
+            let totalBytesPerSecond = externalDiskActivities.reduce(0.0) {
+                $0 + $1.readBytesPerSecond + $1.writeBytesPerSecond
+            }
+            let text = ByteRateFormatter.stableMenuRate(for: totalBytesPerSecond, preferredUnitIndex: nil).text
+            return "X\(compactMenuRate(text))"
+        }
+    }
+
     private func persistTrayConfiguration() {
         UserDefaults.standard.set(
             selectedTrayMetrics.map(\.rawValue).joined(separator: ","),
@@ -549,11 +721,7 @@ final class MenuBarViewModel: ObservableObject {
         appSnapshots = []
         perAppStatusMessage = nil
         refreshMenuBarTitle()
-        if highRefreshEnabled {
-            appResourceMonitor.restart()
-        } else {
-            perAppStatusMessage = "Per-app monitoring is paused in low refresh mode."
-        }
+        appResourceMonitor.restart()
     }
 
     private func applyRefreshMode() {
@@ -563,17 +731,10 @@ final class MenuBarViewModel: ObservableObject {
         systemMetricsMonitor.setPollingInterval(
             highRefreshEnabled ? RefreshProfile.highSystemInterval : RefreshProfile.lowSystemInterval
         )
-
-        if highRefreshEnabled {
-            appResourceMonitor.start()
-            if perAppStatusMessage == "Per-app monitoring is paused in low refresh mode." {
-                perAppStatusMessage = nil
-            }
-        } else {
-            appResourceMonitor.stop()
-            appSnapshots = []
-            perAppStatusMessage = "Per-app monitoring is paused in low refresh mode."
-        }
+        appResourceMonitor.setPollingInterval(
+            highRefreshEnabled ? RefreshProfile.highAppInterval : RefreshProfile.lowAppInterval
+        )
+        appResourceMonitor.start()
     }
 
     private func refreshMenuBarTitle() {
@@ -603,6 +764,14 @@ final class MenuBarViewModel: ObservableObject {
             .replacingOccurrences(of: "MB/s", with: "M")
             .replacingOccurrences(of: "KB/s", with: "K")
             .replacingOccurrences(of: "B/s", with: "B")
+    }
+
+    private func compactMenuRate(_ value: String) -> String {
+        compactTrayRate(value)
+            .replacingOccurrences(of: "G", with: "")
+            .replacingOccurrences(of: "M", with: "")
+            .replacingOccurrences(of: "K", with: "")
+            .replacingOccurrences(of: "B", with: "")
     }
 
     private func resolvedMenuBarTitle() -> String {
@@ -709,6 +878,7 @@ private final class SystemMetricsMonitor: @unchecked Sendable {
     private var diskNames: [String] = []
     private var previousDiskCounters: [String: DiskCounters] = [:]
     private var pollingInterval: TimeInterval = 1
+    private var didResolveDiskNames = false
     private struct ExternalDiskInfo {
         let displayName: String
         let isMemoryCard: Bool
@@ -720,7 +890,6 @@ private final class SystemMetricsMonitor: @unchecked Sendable {
 
     func start() {
         guard timer == nil else { return }
-        diskNames = resolveTrackedDiskNames()
 
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now(), repeating: pollingInterval)
@@ -760,7 +929,10 @@ private final class SystemMetricsMonitor: @unchecked Sendable {
     }
 
     private func poll() {
-        diskNames = resolveTrackedDiskNames()
+        if !didResolveDiskNames || previousDiskCounters.isEmpty {
+            diskNames = resolveTrackedDiskNames()
+            didResolveDiskNames = true
+        }
 
         let externalActivities = readExternalDiskActivities()
 

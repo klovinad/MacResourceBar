@@ -21,6 +21,11 @@ final class NetworkProcessMonitor: @unchecked Sendable {
     private var buffer = Data()
     private var currentBatch: [pid_t: NetworkProcessSample] = [:]
     private var didPrimeDeltaStream = false
+    private var pollingInterval: TimeInterval = 1
+
+    deinit {
+        stopLocked()
+    }
 
     func start() {
         let owner = Unmanaged.passUnretained(self)
@@ -45,13 +50,27 @@ final class NetworkProcessMonitor: @unchecked Sendable {
         }
     }
 
+    func setPollingInterval(_ interval: TimeInterval) {
+        let normalizedInterval = max(interval, 1)
+        let owner = Unmanaged.passUnretained(self)
+        queue.async {
+            let monitor = owner.takeUnretainedValue()
+            guard abs(normalizedInterval - monitor.pollingInterval) > 0.01 else { return }
+            monitor.pollingInterval = normalizedInterval
+            if monitor.process != nil {
+                monitor.stopLocked()
+                monitor.startLocked()
+            }
+        }
+    }
+
     private func startLocked() {
         guard process == nil else { return }
 
         let pipe = Pipe()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/nettop")
-        process.arguments = ["-P", "-L", "0", "-d", "-x", "-n"]
+        process.arguments = ["-P", "-L", "0", "-d", "-x", "-n", "-s", "\(Int(pollingInterval.rounded()))"]
         process.standardOutput = pipe
         process.standardError = pipe
         let owner = Unmanaged.passUnretained(self)
@@ -89,6 +108,7 @@ final class NetworkProcessMonitor: @unchecked Sendable {
         if let process, process.isRunning {
             process.terminationHandler = nil
             process.terminate()
+            process.waitUntilExit()
         }
         self.process = nil
     }
@@ -191,7 +211,7 @@ private struct AppMetadata {
         let baseName = AppMetadata.stripPID(from: processToken)
 
         if let pid,
-           let app = NSWorkspace.shared.runningApplications.first(where: { $0.processIdentifier == pid }) {
+           let app = Self.runningApplication(for: pid) {
             self.displayName = app.localizedName ?? baseName
             self.pid = pid
             self.bundleIdentifier = app.bundleIdentifier
@@ -216,5 +236,15 @@ private struct AppMetadata {
         let suffix = token[token.index(after: separator)...]
         guard Int(suffix) != nil else { return token }
         return String(token[..<separator])
+    }
+
+    private static func runningApplication(for pid: pid_t) -> NSRunningApplication? {
+        if Thread.isMainThread {
+            return NSWorkspace.shared.runningApplications.first { $0.processIdentifier == pid }
+        }
+
+        return DispatchQueue.main.sync {
+            NSWorkspace.shared.runningApplications.first { $0.processIdentifier == pid }
+        }
     }
 }

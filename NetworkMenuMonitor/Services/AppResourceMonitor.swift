@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Darwin
 
 final class AppResourceMonitor: @unchecked Sendable {
     var onUpdate: (([AppResourceSnapshot]) -> Void)?
@@ -21,15 +22,17 @@ final class AppResourceMonitor: @unchecked Sendable {
 
     init() {
         networkMonitor.onUpdate = { [weak self] samples in
-            self?.queue.async {
+            guard let monitor = self else { return }
+            monitor.queue.async { [monitor] in
                 let byPid = Dictionary(uniqueKeysWithValues: samples.map { ($0.pid, $0) })
-                self?.latestNetwork = byPid
-                self?.publishIfNeeded()
+                monitor.latestNetwork = byPid
+                monitor.publishIfNeeded()
             }
         }
 
         networkMonitor.onStatusChange = { [weak self] message in
-            self?.publishStatus(message)
+            guard let monitor = self else { return }
+            monitor.publishStatus(message)
         }
     }
 
@@ -57,6 +60,7 @@ final class AppResourceMonitor: @unchecked Sendable {
         queue.async {
             guard abs(normalizedInterval - self.pollingInterval) > 0.01 else { return }
             self.pollingInterval = normalizedInterval
+            self.networkMonitor.setPollingInterval(normalizedInterval)
             if self.timer != nil {
                 self.stopLocked()
                 self.startLocked()
@@ -69,6 +73,7 @@ final class AppResourceMonitor: @unchecked Sendable {
 
         isRunning = true
         publishStatus(nil)
+        networkMonitor.setPollingInterval(pollingInterval)
         networkMonitor.start()
         scheduleTimer()
     }
@@ -96,10 +101,13 @@ final class AppResourceMonitor: @unchecked Sendable {
     }
 
     private func tick() {
-        latestCPU = cpuMonitor.sample()
-        latestMemory = memoryMonitor.sample()
-        latestDisk = diskMonitor.sample()
-        publishUpdate(collectSnapshots())
+        let metadataByPid = runningApplicationMetadataByPid()
+        let activePids = allProcessIdentifiers()
+
+        latestCPU = cpuMonitor.sample(activePids: activePids)
+        latestMemory = memoryMonitor.sample(activePids: activePids)
+        latestDisk = diskMonitor.sample(activePids: activePids)
+        publishUpdate(collectSnapshots(metadataByPid: metadataByPid))
     }
 
     private func publishUpdate(_ snapshots: [AppResourceSnapshot]) {
@@ -112,10 +120,10 @@ final class AppResourceMonitor: @unchecked Sendable {
 
     private func publishIfNeeded() {
         guard isRunning else { return }
-        publishUpdate(collectSnapshots())
+        publishUpdate(collectSnapshots(metadataByPid: runningApplicationMetadataByPid()))
     }
 
-    private func collectSnapshots() -> [AppResourceSnapshot] {
+    private func collectSnapshots(metadataByPid: [pid_t: ProcessMetadata]) -> [AppResourceSnapshot] {
         var result: [AppResourceSnapshot] = []
         let allPids = Set(latestNetwork.keys)
             .union(latestCPU.keys)
@@ -123,7 +131,9 @@ final class AppResourceMonitor: @unchecked Sendable {
             .union(latestDisk.keys)
 
         for pid in allPids {
-            let metadata = metadata(for: pid)
+            guard let metadata = metadata(for: pid, metadataByPid: metadataByPid) else {
+                continue
+            }
             let cpu = latestCPU[pid] ?? 0
             let ram = latestMemory[pid] ?? 0
             let disk = latestDisk[pid]
@@ -132,6 +142,7 @@ final class AppResourceMonitor: @unchecked Sendable {
             result.append(AppResourceSnapshot(
                 processName: metadata.displayName,
                 pid: pid,
+                pids: [pid],
                 bundleIdentifier: metadata.bundleIdentifier,
                 icon: metadata.icon,
                 cpuUsagePercent: cpu,
@@ -140,20 +151,65 @@ final class AppResourceMonitor: @unchecked Sendable {
                 diskWriteBytesPerSecond: disk?.writeBytesPerSecond ?? 0,
                 downloadBytesPerSecond: network?.downloadBytesPerSecond ?? 0,
                 uploadBytesPerSecond: network?.uploadBytesPerSecond ?? 0,
-                isApproximation: network != nil || !latestNetwork.isEmpty
+                isApproximation: network != nil || !latestNetwork.isEmpty,
+                childProcessCount: 1
             ))
         }
 
         return result
     }
 
-    private func metadata(for pid: pid_t) -> ProcessMetadata {
-        if let app = NSWorkspace.shared.runningApplications.first(where: { $0.processIdentifier == pid }) {
-            return ProcessMetadata(
-                displayName: app.localizedName ?? "Unknown",
-                bundleIdentifier: app.bundleIdentifier,
-                icon: app.icon
+    private func runningApplicationMetadataByPid() -> [pid_t: ProcessMetadata] {
+        let snapshot: [pid_t: ProcessMetadata]
+        if Thread.isMainThread {
+            snapshot = Self.readRunningApplicationMetadataByPid()
+        } else {
+            snapshot = DispatchQueue.main.sync {
+                Self.readRunningApplicationMetadataByPid()
+            }
+        }
+
+        return snapshot
+    }
+
+    private func allProcessIdentifiers() -> Set<pid_t> {
+        let capacity = max(proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0), 0)
+        guard capacity > 0 else { return [] }
+
+        let pidCount = (Int(capacity) / MemoryLayout<pid_t>.stride) * 2
+        var pids = Array(repeating: pid_t(0), count: pidCount)
+        let bytesWritten = pids.withUnsafeMutableBufferPointer { buffer in
+            proc_listpids(
+                UInt32(PROC_ALL_PIDS),
+                0,
+                buffer.baseAddress,
+                Int32(buffer.count * MemoryLayout<pid_t>.stride)
             )
+        }
+
+        guard bytesWritten > 0 else { return [] }
+        return Set(pids.prefix(Int(bytesWritten) / MemoryLayout<pid_t>.stride).filter { $0 > 0 })
+    }
+
+    private static func readRunningApplicationMetadataByPid() -> [pid_t: ProcessMetadata] {
+        Dictionary(uniqueKeysWithValues: NSWorkspace.shared.runningApplications.map { app in
+            (
+                app.processIdentifier,
+                ProcessMetadata(
+                    displayName: app.localizedName ?? "PID \(app.processIdentifier)",
+                    bundleIdentifier: app.bundleIdentifier,
+                    icon: app.icon
+                )
+            )
+        })
+    }
+
+    private func metadata(
+        for pid: pid_t,
+        metadataByPid: [pid_t: ProcessMetadata]
+    ) -> ProcessMetadata? {
+        if let metadata = metadataByPid[pid] {
+            return metadata
         }
 
         if let network = latestNetwork[pid] {
@@ -164,16 +220,47 @@ final class AppResourceMonitor: @unchecked Sendable {
             )
         }
 
-        return ProcessMetadata(
-            displayName: "PID \(pid)",
-            bundleIdentifier: nil,
-            icon: NSWorkspace.shared.icon(for: .application)
-        )
+        if let processName = processName(for: pid) ?? executableName(for: pid) {
+            return ProcessMetadata(
+                displayName: processName,
+                bundleIdentifier: nil,
+                icon: NSWorkspace.shared.icon(for: .application)
+            )
+        }
+
+        return nil
+    }
+
+    private func processName(for pid: pid_t) -> String? {
+        var nameBuffer = [CChar](repeating: 0, count: Int(MAXCOMLEN) + 1)
+        let result = proc_name(pid, &nameBuffer, UInt32(nameBuffer.count))
+        guard result > 0 else { return nil }
+        let nameLength = nameBuffer.firstIndex(of: 0) ?? nameBuffer.count
+        return String(decoding: nameBuffer.prefix(nameLength).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+    }
+
+    private func executableName(for pid: pid_t) -> String? {
+        var pathBuffer = [CChar](repeating: 0, count: 4096)
+        let result = proc_pidpath(pid, &pathBuffer, UInt32(pathBuffer.count))
+        guard result > 0 else { return nil }
+
+        let pathLength = pathBuffer.firstIndex(of: 0) ?? pathBuffer.count
+        let path = String(decoding: pathBuffer.prefix(pathLength).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return URL(fileURLWithPath: path).lastPathComponent.nilIfEmpty
     }
 
     private struct ProcessMetadata {
         let displayName: String
         let bundleIdentifier: String?
         let icon: NSImage?
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }

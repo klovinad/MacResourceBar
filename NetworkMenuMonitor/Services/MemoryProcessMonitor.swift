@@ -3,9 +3,8 @@ import AppKit
 import Darwin
 
 final class MemoryProcessMonitor {
-    func sample() -> [pid_t: UInt64] {
+    func sample(activePids: Set<pid_t>) -> [pid_t: UInt64] {
         var result: [pid_t: UInt64] = [:]
-        let activePids = NSWorkspace.shared.runningApplications.compactMap { $0.processIdentifier }
 
         for pid in activePids {
             if let taskInfo = readTaskInfo(for: pid) {
