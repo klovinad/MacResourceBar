@@ -165,6 +165,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         static let popoverSizeCompact = NSSize(width: 820, height: 680)
         static let minimumStatusItemLength: CGFloat = 28
         static let maximumStatusItemLength: CGFloat = 760
+        static let maximumAdaptiveStatusItemLength: CGFloat = 430
+        static let maximumStatusItemScreenFraction: CGFloat = 0.36
+        static let statusItemContentPadding: CGFloat = 6
+        static let popoverScreenMargin: CGFloat = 8
         static let fallbackStatusSymbolName = "waveform.path.ecg"
     }
 
@@ -454,8 +458,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updatePopoverSize()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         if let window = popover.contentViewController?.view.window {
-            pinnedPopoverMinX = window.frame.minX
-            pinnedPopoverTopY = window.frame.maxY
+            let clampedOrigin = clampedPopoverOrigin(for: window.frame, on: screenForPopover(window: window))
+            window.setFrameOrigin(clampedOrigin)
+            pinnedPopoverMinX = clampedOrigin.x
+            pinnedPopoverTopY = clampedOrigin.y + window.frame.height
             window.makeKey()
         } else {
             pinnedPopoverMinX = nil
@@ -483,7 +489,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updatePopoverSize() {
-        popover.contentSize = Constants.popoverSizeCompact
+        let screenFrame = screenForPopover(window: nil)?.visibleFrame ?? NSScreen.main?.visibleFrame
+        let maxWidth = (screenFrame?.width ?? Constants.popoverSizeCompact.width) - (Constants.popoverScreenMargin * 2)
+        let maxHeight = (screenFrame?.height ?? Constants.popoverSizeCompact.height) - (Constants.popoverScreenMargin * 2)
+        popover.contentSize = NSSize(
+            width: min(Constants.popoverSizeCompact.width, max(Constants.minimumStatusItemLength, maxWidth)),
+            height: min(Constants.popoverSizeCompact.height, max(Constants.minimumStatusItemLength, maxHeight))
+        )
         pinPopoverPositionIfNeeded()
     }
 
@@ -508,7 +520,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             visibleMetrics = [.network]
         }
 
-        let textByMetric = visibleMetrics.reduce(into: [MenuBarViewModel.TrayMetric: String]()) { partial, metric in
+        var textByMetric = visibleMetrics.reduce(into: [MenuBarViewModel.TrayMetric: String]()) { partial, metric in
             partial[metric] = viewModel.trayText(for: metric)
         }
 
@@ -523,11 +535,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem?.button?.attributedTitle = NSAttributedString(string: "")
         statusItem?.button?.image = nil
         if !popover.isShown || force {
-            let measuredWidth = ceil((statusItemContentView?.requiredWidth() ?? 0) + 6)
-            statusItem?.length = min(
-                max(measuredWidth, Constants.minimumStatusItemLength),
-                Constants.maximumStatusItemLength
-            )
+            let maximumLength = maximumStatusItemLength()
+            var measuredWidth = ceil((statusItemContentView?.requiredWidth() ?? 0) + Constants.statusItemContentPadding)
+            var targetWidth = measuredWidth
+
+            if measuredWidth > maximumLength {
+                textByMetric = visibleMetrics.reduce(into: [MenuBarViewModel.TrayMetric: String]()) { partial, metric in
+                    partial[metric] = viewModel.compactTrayText(for: metric)
+                }
+                statusItemContentView?.update(
+                    orderedMetrics: visibleMetrics,
+                    textByMetric: textByMetric,
+                    showHighRefreshBadge: viewModel.highRefreshEnabled
+                )
+                measuredWidth = ceil((statusItemContentView?.requiredWidth() ?? 0) + Constants.statusItemContentPadding)
+                targetWidth = min(measuredWidth, Constants.maximumStatusItemLength)
+            }
+
+            statusItem?.length = max(targetWidth, Constants.minimumStatusItemLength)
         }
         statusItem?.button?.needsLayout = true
         pinPopoverPositionIfNeeded()
@@ -537,10 +562,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard popover.isShown else { return }
         guard let targetMinX = pinnedPopoverMinX, let targetTopY = pinnedPopoverTopY else { return }
         guard let window = popover.contentViewController?.view.window else { return }
-        let targetOrigin = NSPoint(x: targetMinX, y: targetTopY - window.frame.height)
+        let requestedOrigin = NSPoint(x: targetMinX, y: targetTopY - window.frame.height)
+        let requestedFrame = NSRect(origin: requestedOrigin, size: window.frame.size)
+        let targetOrigin = clampedPopoverOrigin(for: requestedFrame, on: screenForPopover(window: window))
         if window.frame.origin != targetOrigin {
             window.setFrameOrigin(targetOrigin)
         }
+    }
+
+    private func maximumStatusItemLength() -> CGFloat {
+        let screenWidth = screenForPopover(window: nil)?.visibleFrame.width ?? Constants.maximumStatusItemLength
+        let adaptiveLength = min(
+            Constants.maximumAdaptiveStatusItemLength,
+            screenWidth * Constants.maximumStatusItemScreenFraction
+        )
+        return min(Constants.maximumStatusItemLength, max(Constants.minimumStatusItemLength, adaptiveLength))
+    }
+
+    private func screenForPopover(window: NSWindow?) -> NSScreen? {
+        window?.screen ?? statusItem?.button?.window?.screen ?? NSScreen.main
+    }
+
+    private func clampedPopoverOrigin(for frame: NSRect, on screen: NSScreen?) -> NSPoint {
+        guard let screen else { return frame.origin }
+
+        let visibleFrame = screen.visibleFrame.insetBy(
+            dx: Constants.popoverScreenMargin,
+            dy: Constants.popoverScreenMargin
+        )
+        let minX = visibleFrame.minX
+        let maxX = max(minX, visibleFrame.maxX - frame.width)
+        let minY = visibleFrame.minY
+        let maxY = max(minY, visibleFrame.maxY - frame.height)
+
+        return NSPoint(
+            x: min(max(frame.minX, minX), maxX),
+            y: min(max(frame.minY, minY), maxY)
+        )
     }
 
 }
