@@ -25,6 +25,24 @@ struct SettingsView: View {
                     get: { viewModel.showHelperProcesses },
                     set: { viewModel.setShowHelperProcesses($0) }
                 ))
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Background opacity")
+                        Spacer()
+                        Text("\(Int(viewModel.backgroundOpacity * 100))%")
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Slider(
+                        value: Binding(
+                            get: { viewModel.backgroundOpacity },
+                            set: { viewModel.setBackgroundOpacity($0) }
+                        ),
+                        in: 0.2...1,
+                        step: 0.05
+                    )
+                }
             }
 
             Section("Menu Bar Metrics") {

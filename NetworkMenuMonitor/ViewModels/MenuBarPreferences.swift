@@ -11,6 +11,7 @@ struct MenuBarPreferences {
         static let appSearchText = "appSearchText"
         static let activeAppsOnly = "activeAppsOnly"
         static let showHelperProcesses = "showHelperProcesses"
+        static let backgroundOpacity = "backgroundOpacity"
     }
 
     private let defaults: UserDefaults
@@ -54,6 +55,11 @@ struct MenuBarPreferences {
         nonmutating set { defaults.set(newValue, forKey: Key.showHelperProcesses) }
     }
 
+    var backgroundOpacity: Double {
+        get { double(forKey: Key.backgroundOpacity, defaultValue: 0.9) }
+        nonmutating set { defaults.set(newValue, forKey: Key.backgroundOpacity) }
+    }
+
     var trayMetricRawValues: [String] {
         get { csvValues(forKey: Key.trayMetrics) }
         nonmutating set { defaults.set(newValue.joined(separator: ","), forKey: Key.trayMetrics) }
@@ -67,6 +73,11 @@ struct MenuBarPreferences {
     private func bool(forKey key: String, defaultValue: Bool) -> Bool {
         guard defaults.object(forKey: key) != nil else { return defaultValue }
         return defaults.bool(forKey: key)
+    }
+
+    private func double(forKey key: String, defaultValue: Double) -> Double {
+        guard defaults.object(forKey: key) != nil else { return defaultValue }
+        return defaults.double(forKey: key)
     }
 
     private func csvValues(forKey key: String) -> [String] {

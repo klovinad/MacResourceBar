@@ -85,6 +85,7 @@ final class MenuBarViewModel: ObservableObject {
     @Published var appSearchText: String
     @Published var activeAppsOnly: Bool
     @Published var showHelperProcesses: Bool
+    @Published var backgroundOpacity: Double
     @Published private(set) var appSortOrder: AppSortOrder
     @Published private(set) var selectedTrayMetrics: [TrayMetric]
     @Published private(set) var trayMetricOrder: [TrayMetric]
@@ -157,6 +158,7 @@ final class MenuBarViewModel: ObservableObject {
         appSearchText = preferences.appSearchText
         activeAppsOnly = preferences.activeAppsOnly
         showHelperProcesses = preferences.showHelperProcesses
+        backgroundOpacity = Self.clampedBackgroundOpacity(preferences.backgroundOpacity)
 
         let storedOrder = preferences.trayMetricOrderRawValues
             .compactMap { TrayMetric(rawValue: $0) }
@@ -416,6 +418,11 @@ final class MenuBarViewModel: ObservableObject {
         preferences.showHelperProcesses = enabled
     }
 
+    func setBackgroundOpacity(_ opacity: Double) {
+        backgroundOpacity = Self.clampedBackgroundOpacity(opacity)
+        preferences.backgroundOpacity = backgroundOpacity
+    }
+
     func terminateProcess(_ snapshot: AppResourceSnapshot) {
         for pid in snapshot.pids {
             kill(pid, SIGTERM)
@@ -667,6 +674,10 @@ final class MenuBarViewModel: ObservableObject {
     ) -> [TrayMetric] {
         let normalized = order.filter { selected.contains($0) }
         return normalized.isEmpty ? [.network] : normalized
+    }
+
+    private static func clampedBackgroundOpacity(_ opacity: Double) -> Double {
+        min(max(opacity, 0.2), 1)
     }
 
     private func formattedDiskRate(precision: Int, compact: Bool = false) -> String {

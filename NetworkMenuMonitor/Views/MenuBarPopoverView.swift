@@ -11,15 +11,21 @@ struct MenuBarPopoverView: View {
     private let historyColumns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header
-            systemSummary
-            historySummary
-            appTableControls
-            Divider()
-            content
+        ZStack {
+            Color(nsColor: .windowBackgroundColor)
+                .opacity(viewModel.backgroundOpacity)
+                .ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: 14) {
+                header
+                systemSummary
+                historySummary
+                appTableControls
+                Divider()
+                content
+            }
+            .padding(14)
         }
-        .padding(14)
     }
 
     private var header: some View {

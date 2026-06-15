@@ -458,6 +458,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updatePopoverSize()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         if let window = popover.contentViewController?.view.window {
+            window.isOpaque = false
+            window.backgroundColor = .clear
             let clampedOrigin = clampedPopoverOrigin(for: window.frame, on: screenForPopover(window: window))
             window.setFrameOrigin(clampedOrigin)
             pinnedPopoverMinX = clampedOrigin.x
