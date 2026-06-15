@@ -192,16 +192,20 @@ final class AppResourceMonitor: @unchecked Sendable {
     }
 
     private static func readRunningApplicationMetadataByPid() -> [pid_t: ProcessMetadata] {
-        Dictionary(uniqueKeysWithValues: NSWorkspace.shared.runningApplications.map { app in
-            (
-                app.processIdentifier,
-                ProcessMetadata(
-                    displayName: app.localizedName ?? "PID \(app.processIdentifier)",
-                    bundleIdentifier: app.bundleIdentifier,
-                    icon: app.icon
-                )
+        var metadataByPid: [pid_t: ProcessMetadata] = [:]
+
+        for app in NSWorkspace.shared.runningApplications {
+            let pid = app.processIdentifier
+            guard pid > 0 else { continue }
+
+            metadataByPid[pid] = ProcessMetadata(
+                displayName: app.localizedName ?? "PID \(pid)",
+                bundleIdentifier: app.bundleIdentifier,
+                icon: app.icon
             )
-        })
+        }
+
+        return metadataByPid
     }
 
     private func metadata(
