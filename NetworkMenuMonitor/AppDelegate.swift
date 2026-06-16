@@ -77,6 +77,9 @@ private final class StatusItemContentView: NSView {
         .externalDisk: externalDiskSegment,
         .network: networkSegment
     ]
+    private var lastOrderedMetrics: [MenuBarViewModel.TrayMetric] = []
+    private var lastShowHighRefreshBadge = false
+    private var lastTextByMetric: [MenuBarViewModel.TrayMetric: String] = [:]
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -126,31 +129,47 @@ private final class StatusItemContentView: NSView {
         textByMetric: [MenuBarViewModel.TrayMetric: String],
         showHighRefreshBadge: Bool
     ) {
-        for arrangedSubview in stackView.arrangedSubviews {
-            stackView.removeArrangedSubview(arrangedSubview)
-            arrangedSubview.removeFromSuperview()
+        let structureChanged = orderedMetrics != lastOrderedMetrics || showHighRefreshBadge != lastShowHighRefreshBadge
+
+        if structureChanged {
+            for arrangedSubview in stackView.arrangedSubviews {
+                stackView.removeArrangedSubview(arrangedSubview)
+                arrangedSubview.removeFromSuperview()
+            }
+
+            if showHighRefreshBadge {
+                stackView.addArrangedSubview(highRefreshSegment)
+            }
+
+            var seen = Set<MenuBarViewModel.TrayMetric>()
+            for metric in orderedMetrics {
+                guard seen.insert(metric).inserted else { continue }
+                guard let segment = segmentsByMetric[metric] else { continue }
+                stackView.addArrangedSubview(segment)
+            }
+
+            lastOrderedMetrics = orderedMetrics
+            lastShowHighRefreshBadge = showHighRefreshBadge
         }
 
-        highRefreshSegment.update(text: nil)
+        let highRefreshText: String? = showHighRefreshBadge ? "HR" : nil
+        if structureChanged || highRefreshSegment.isHidden != (highRefreshText == nil) {
+            highRefreshSegment.update(text: highRefreshText)
+        }
+
         for metric in MenuBarViewModel.TrayMetric.allCases {
-            segmentsByMetric[metric]?.update(text: nil)
+            let newText = orderedMetrics.contains(metric) ? textByMetric[metric] : nil
+            let oldText = lastTextByMetric[metric]
+            if structureChanged || newText != oldText {
+                segmentsByMetric[metric]?.update(text: newText)
+            }
         }
+        lastTextByMetric = textByMetric
 
-        if showHighRefreshBadge {
-            highRefreshSegment.update(text: "HR")
-            stackView.addArrangedSubview(highRefreshSegment)
+        if structureChanged {
+            layoutSubtreeIfNeeded()
+            invalidateIntrinsicContentSize()
         }
-
-        var seen = Set<MenuBarViewModel.TrayMetric>()
-        for metric in orderedMetrics {
-            guard seen.insert(metric).inserted else { continue }
-            guard let segment = segmentsByMetric[metric] else { continue }
-            segment.update(text: textByMetric[metric])
-            stackView.addArrangedSubview(segment)
-        }
-
-        layoutSubtreeIfNeeded()
-        invalidateIntrinsicContentSize()
     }
 
     func requiredWidth() -> CGFloat {
@@ -159,7 +178,7 @@ private final class StatusItemContentView: NSView {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private enum Constants {
         static let popoverSizeExpanded = NSSize(width: 820, height: 720)
         static let popoverSizeCompact = NSSize(width: 820, height: 680)
@@ -232,12 +251,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func configurePopover() {
+        popover.delegate = self
         popover.behavior = .transient
         popover.animates = false
         popover.contentSize = Constants.popoverSizeExpanded
-        popover.contentViewController = NSHostingController(
-            rootView: MenuBarPopoverView(viewModel: viewModel)
-        )
+    }
+
+    private func ensurePopoverContent() {
+        if popover.contentViewController == nil {
+            popover.contentViewController = NSHostingController(
+                rootView: MenuBarPopoverView(viewModel: viewModel)
+            )
+        }
     }
 
     private func configureStatusItem() {
@@ -256,16 +281,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.title = ""
         button.attributedTitle = NSAttributedString(string: "")
 
-        let contentView = StatusItemContentView(frame: .zero)
-        contentView.isHidden = false
-        button.addSubview(contentView)
-        NSLayoutConstraint.activate([
-            contentView.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 3),
-            contentView.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -3),
-            contentView.centerYAnchor.constraint(equalTo: button.centerYAnchor),
-            contentView.heightAnchor.constraint(equalToConstant: 18)
-        ])
-        statusItemContentView = contentView
+        statusItemContentView = nil
         updateStatusItemTitle()
 
         statusItem = item
@@ -359,6 +375,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if popover.isShown {
                 pinnedPopoverMinX = nil
                 pinnedPopoverTopY = nil
+                viewModel.setPerAppMonitoringEnabled(false)
                 popover.performClose(sender)
             }
             updateStatusMenu()
@@ -374,6 +391,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             pinnedPopoverMinX = nil
             pinnedPopoverTopY = nil
+            viewModel.setPerAppMonitoringEnabled(false)
             popover.performClose(sender)
         } else {
             showPopover()
@@ -385,6 +403,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             pinnedPopoverMinX = nil
             pinnedPopoverTopY = nil
+            viewModel.setPerAppMonitoringEnabled(false)
             popover.performClose(sender)
         } else {
             showPopover()
@@ -453,7 +472,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showPopover() {
         ensureStatusItem()
+        ensurePopoverContent()
         guard let button = statusItem?.button else { return }
+        viewModel.setPerAppMonitoringEnabled(true)
 
         updatePopoverSize()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -470,6 +491,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             pinnedPopoverTopY = nil
         }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        pinnedPopoverMinX = nil
+        pinnedPopoverTopY = nil
+        viewModel.setPerAppMonitoringEnabled(false)
     }
 
     private func showPopoverForVerificationIfRequested() {
@@ -510,53 +537,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown && !force {
             return
         }
-        let orderedMetrics = viewModel.orderedVisibleTrayMetrics
-        var dedupedMetrics: [MenuBarViewModel.TrayMetric] = []
-        var seen = Set<MenuBarViewModel.TrayMetric>()
-        for metric in orderedMetrics where seen.insert(metric).inserted {
-            dedupedMetrics.append(metric)
-        }
 
-        var visibleMetrics = dedupedMetrics
-        if visibleMetrics.isEmpty {
-            visibleMetrics = [.network]
-        }
-
-        var textByMetric = visibleMetrics.reduce(into: [MenuBarViewModel.TrayMetric: String]()) { partial, metric in
-            partial[metric] = viewModel.trayText(for: metric)
-        }
-
-        statusItemContentView?.update(
-            orderedMetrics: visibleMetrics,
-            textByMetric: textByMetric,
-            showHighRefreshBadge: viewModel.highRefreshEnabled
-        )
-
-        statusItemContentView?.isHidden = false
-        statusItem?.button?.title = ""
-        statusItem?.button?.attributedTitle = NSAttributedString(string: "")
+        let title = viewModel.menuBarTitle
+        statusItemContentView?.isHidden = true
         statusItem?.button?.image = nil
+        statusItem?.button?.title = title
+        statusItem?.button?.attributedTitle = NSAttributedString(string: title)
+
         if !popover.isShown || force {
             let maximumLength = maximumStatusItemLength()
-            var measuredWidth = ceil((statusItemContentView?.requiredWidth() ?? 0) + Constants.statusItemContentPadding)
-            var targetWidth = measuredWidth
-
-            if measuredWidth > maximumLength {
-                textByMetric = visibleMetrics.reduce(into: [MenuBarViewModel.TrayMetric: String]()) { partial, metric in
-                    partial[metric] = viewModel.compactTrayText(for: metric)
-                }
-                statusItemContentView?.update(
-                    orderedMetrics: visibleMetrics,
-                    textByMetric: textByMetric,
-                    showHighRefreshBadge: viewModel.highRefreshEnabled
-                )
-                measuredWidth = ceil((statusItemContentView?.requiredWidth() ?? 0) + Constants.statusItemContentPadding)
-                targetWidth = min(measuredWidth, Constants.maximumStatusItemLength)
-            }
-
-            statusItem?.length = max(targetWidth, Constants.minimumStatusItemLength)
+            let font = statusItem?.button?.font ?? .monospacedSystemFont(ofSize: 12, weight: .regular)
+            let measuredWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width + Constants.statusItemContentPadding)
+            statusItem?.length = max(min(measuredWidth, maximumLength), Constants.minimumStatusItemLength)
         }
-        statusItem?.button?.needsLayout = true
         pinPopoverPositionIfNeeded()
     }
 
