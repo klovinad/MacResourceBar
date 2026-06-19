@@ -16,91 +16,72 @@ final class NetworkProcessMonitor: @unchecked Sendable {
     var onStatusChange: ((String?) -> Void)?
 
     private let queue = DispatchQueue(label: "NetworkMenuMonitor.NetworkProcessMonitor")
-    private var pollTimer: DispatchSourceTimer?
     private var process: Process?
     private var stdoutHandle: FileHandle?
     private var buffer = Data()
     private var currentBatch: [pid_t: NetworkProcessSample] = [:]
+    private var didPrimeDeltaStream = false
     private var pollingInterval: TimeInterval = 1
-    private var isRunning = false
 
     deinit {
         stopLocked()
     }
 
     func start() {
-        queue.async { [weak self] in
-            self?.startLocked()
+        let owner = Unmanaged.passUnretained(self)
+        queue.async {
+            owner.takeUnretainedValue().startLocked()
         }
     }
 
     func stop() {
-        queue.async { [weak self] in
-            self?.stopLocked()
+        let owner = Unmanaged.passUnretained(self)
+        queue.async {
+            owner.takeUnretainedValue().stopLocked()
         }
     }
 
     func restart() {
-        queue.async { [weak self] in
-            self?.stopLocked()
-            self?.startLocked()
+        let owner = Unmanaged.passUnretained(self)
+        queue.async {
+            let monitor = owner.takeUnretainedValue()
+            monitor.stopLocked()
+            monitor.startLocked()
         }
     }
 
     func setPollingInterval(_ interval: TimeInterval) {
         let normalizedInterval = max(interval, 1)
-        queue.async { [weak self] in
-            guard let self else { return }
-            guard abs(normalizedInterval - pollingInterval) > 0.01 else { return }
-            pollingInterval = normalizedInterval
-            if isRunning {
-                stopLocked()
-                startLocked()
+        let owner = Unmanaged.passUnretained(self)
+        queue.async {
+            let monitor = owner.takeUnretainedValue()
+            guard abs(normalizedInterval - monitor.pollingInterval) > 0.01 else { return }
+            monitor.pollingInterval = normalizedInterval
+            if monitor.process != nil {
+                monitor.stopLocked()
+                monitor.startLocked()
             }
         }
     }
 
     private func startLocked() {
-        guard !isRunning else { return }
-        isRunning = true
-        publishStatus(nil)
-        runOneSampleLocked()
-        schedulePollTimerLocked()
-    }
-
-    private func schedulePollTimerLocked() {
-        pollTimer?.cancel()
-        let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now() + pollingInterval, repeating: pollingInterval)
-        timer.setEventHandler { [weak self] in
-            self?.runOneSampleLocked()
-        }
-        timer.resume()
-        pollTimer = timer
-    }
-
-    private func runOneSampleLocked() {
-        guard isRunning, process == nil else { return }
-
-        buffer.removeAll(keepingCapacity: true)
-        currentBatch.removeAll(keepingCapacity: true)
+        guard process == nil else { return }
 
         let pipe = Pipe()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/nettop")
-        process.arguments = ["-P", "-L", "1", "-d", "-x", "-n", "-s", "1"]
+        process.arguments = ["-P", "-L", "0", "-d", "-x", "-n", "-s", "\(Int(pollingInterval.rounded()))"]
         process.standardOutput = pipe
         process.standardError = pipe
+        let owner = Unmanaged.passUnretained(self)
         let queue = self.queue
-        process.terminationHandler = { [weak self, queue] terminated in
-            queue.async { [weak self] in
-                guard let self else { return }
-                self.stdoutHandle?.readabilityHandler = nil
-                self.stdoutHandle = nil
-                self.process = nil
-                self.flushCurrentBatchIfNeeded()
-                if terminated.terminationStatus != 0, self.isRunning {
-                    self.publishStatus("Per-app monitoring is unavailable because nettop exited with status \(terminated.terminationStatus).")
+        process.terminationHandler = { [queue] terminated in
+            queue.async {
+                let monitor = owner.takeUnretainedValue()
+                monitor.process = nil
+                monitor.stdoutHandle = nil
+                if terminated.terminationStatus != 0 {
+                    monitor.publishStatus("Per-app monitoring is unavailable because nettop exited with status \(terminated.terminationStatus).")
                 }
             }
         }
@@ -112,19 +93,16 @@ final class NetworkProcessMonitor: @unchecked Sendable {
             publishStatus(nil)
             installReader(on: pipe.fileHandleForReading)
         } catch {
-            self.process = nil
             publishStatus("Per-app monitoring is unavailable because nettop could not be started: \(error.localizedDescription)")
         }
     }
 
     private func stopLocked() {
-        isRunning = false
-        pollTimer?.cancel()
-        pollTimer = nil
         stdoutHandle?.readabilityHandler = nil
         stdoutHandle = nil
         buffer.removeAll(keepingCapacity: false)
         currentBatch.removeAll(keepingCapacity: false)
+        didPrimeDeltaStream = false
         publishStatus(nil)
 
         if let process, process.isRunning {
@@ -136,12 +114,13 @@ final class NetworkProcessMonitor: @unchecked Sendable {
     }
 
     private func installReader(on handle: FileHandle) {
+        let owner = Unmanaged.passUnretained(self)
         let queue = self.queue
-        handle.readabilityHandler = { [weak self, queue] readableHandle in
+        handle.readabilityHandler = { readableHandle in
             let data = readableHandle.availableData
             guard !data.isEmpty else { return }
-            queue.async { [weak self] in
-                self?.consume(data: data)
+            queue.async {
+                owner.takeUnretainedValue().consume(data: data)
             }
         }
     }
@@ -176,8 +155,9 @@ final class NetworkProcessMonitor: @unchecked Sendable {
         }
 
         let processToken = columns[1]
-        let download = Double(columns[4]) ?? 0
-        let upload = Double(columns[5]) ?? 0
+        let sampleDuration = max(pollingInterval.rounded(), 1)
+        let download = max((Double(columns[4]) ?? 0) / sampleDuration, 0)
+        let upload = max((Double(columns[5]) ?? 0) / sampleDuration, 0)
 
         guard download > 0 || upload > 0 else {
             return
@@ -186,20 +166,35 @@ final class NetworkProcessMonitor: @unchecked Sendable {
         let metadata = AppMetadata(processToken: processToken)
         guard let pid = metadata.pid else { return }
 
-        let snapshot = NetworkProcessSample(
-            pid: pid,
-            processName: metadata.displayName,
-            bundleIdentifier: metadata.bundleIdentifier,
-            icon: metadata.icon,
-            downloadBytesPerSecond: download,
-            uploadBytesPerSecond: upload
-        )
-
-        currentBatch[pid] = snapshot
+        if let current = currentBatch[pid] {
+            currentBatch[pid] = NetworkProcessSample(
+                pid: pid,
+                processName: current.processName,
+                bundleIdentifier: current.bundleIdentifier,
+                icon: current.icon,
+                downloadBytesPerSecond: current.downloadBytesPerSecond + download,
+                uploadBytesPerSecond: current.uploadBytesPerSecond + upload
+            )
+        } else {
+            currentBatch[pid] = NetworkProcessSample(
+                pid: pid,
+                processName: metadata.displayName,
+                bundleIdentifier: metadata.bundleIdentifier,
+                icon: metadata.icon,
+                downloadBytesPerSecond: download,
+                uploadBytesPerSecond: upload
+            )
+        }
     }
 
     private func flushCurrentBatchIfNeeded() {
         guard !currentBatch.isEmpty else { return }
+
+        // Nettop reports cumulative counters in the first frame; ignore baseline.
+        guard didPrimeDeltaStream else {
+            didPrimeDeltaStream = true
+            return
+        }
 
         let snapshots = Array(currentBatch.values)
 

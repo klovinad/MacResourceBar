@@ -43,6 +43,7 @@ struct MenuBarPopoverView: View {
             Button(viewModel.highRefreshEnabled ? "High 1s" : "Low 10s") {
                 viewModel.setHighRefreshEnabled(!viewModel.highRefreshEnabled)
             }
+            .frame(width: 68)
             .buttonStyle(.bordered)
             .controlSize(.small)
 
@@ -238,9 +239,9 @@ struct MenuBarPopoverView: View {
                 appResourceTableHeader
                 TopAlignedScrollView(resetID: tableScrollResetID) {
                     appResourceList(snapshots)
+                        .padding(.trailing, tableScrollbarReserve)
                 }
                 .frame(height: tableMaxHeight)
-                .padding(.trailing, tableScrollbarReserve)
             }
         }
     }

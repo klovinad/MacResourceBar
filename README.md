@@ -137,3 +137,11 @@ Network app/
 ## Privacy
 
 The MVP reads local system counters and process metadata on the Mac. It does not send telemetry or snapshots anywhere.
+
+## Security
+
+Please report security issues privately. See [SECURITY.md](SECURITY.md) for supported versions and reporting guidance.
+
+## License
+
+MacResourceBar is released under the [MIT License](LICENSE).

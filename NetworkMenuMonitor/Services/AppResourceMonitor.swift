@@ -62,8 +62,8 @@ final class AppResourceMonitor: @unchecked Sendable {
             self.pollingInterval = normalizedInterval
             self.networkMonitor.setPollingInterval(normalizedInterval)
             if self.timer != nil {
-                self.stopLocked()
-                self.startLocked()
+                self.timer?.cancel()
+                self.scheduleTimer(deadline: .now() + normalizedInterval)
             }
         }
     }
@@ -75,7 +75,7 @@ final class AppResourceMonitor: @unchecked Sendable {
         publishStatus(nil)
         networkMonitor.setPollingInterval(pollingInterval)
         networkMonitor.start()
-        scheduleTimer()
+        scheduleTimer(deadline: .now())
     }
 
     private func stopLocked() {
@@ -90,9 +90,9 @@ final class AppResourceMonitor: @unchecked Sendable {
         publishUpdate([])
     }
 
-    private func scheduleTimer() {
+    private func scheduleTimer(deadline: DispatchTime) {
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now(), repeating: pollingInterval)
+        timer.schedule(deadline: deadline, repeating: pollingInterval)
         timer.setEventHandler { [weak self] in
             self?.tick()
         }

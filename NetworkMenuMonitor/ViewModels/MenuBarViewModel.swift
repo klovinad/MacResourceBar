@@ -102,7 +102,6 @@ final class MenuBarViewModel: ObservableObject {
     private var preferredUploadUnitIndex = 2
     private var menuBarDownloadTitle = "0.0MB/s"
     private var menuBarUploadTitle = "0.0MB/s"
-    private var isPerAppMonitoringEnabled = false
     private static let memoryFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .memory
@@ -232,7 +231,6 @@ final class MenuBarViewModel: ObservableObject {
         totalsMonitor.start()
         systemMetricsMonitor.start()
         applyRefreshMode()
-        appResourceMonitor.stop()
     }
 
     var filteredAppSnapshots: [AppResourceSnapshot] {
@@ -435,23 +433,6 @@ final class MenuBarViewModel: ObservableObject {
         totalsMonitor.stop()
         appResourceMonitor.stop()
         systemMetricsMonitor.stop()
-        isPerAppMonitoringEnabled = false
-    }
-
-    func setPerAppMonitoringEnabled(_ enabled: Bool) {
-        guard isPerAppMonitoringEnabled != enabled else { return }
-        isPerAppMonitoringEnabled = enabled
-
-        if enabled {
-            appResourceMonitor.setPollingInterval(
-                highRefreshEnabled ? RefreshProfile.highAppInterval : RefreshProfile.lowAppInterval
-            )
-            appResourceMonitor.start()
-        } else {
-            appResourceMonitor.stop()
-            appSnapshots = []
-            perAppStatusMessage = nil
-        }
     }
 
     var selectedTrayMetricsSummary: String {
@@ -585,11 +566,7 @@ final class MenuBarViewModel: ObservableObject {
         historySamples = []
         perAppStatusMessage = nil
         refreshMenuBarTitle()
-        if isPerAppMonitoringEnabled {
-            appResourceMonitor.restart()
-        } else {
-            appResourceMonitor.stop()
-        }
+        appResourceMonitor.restart()
     }
 
     private func applyRefreshMode() {
@@ -602,9 +579,7 @@ final class MenuBarViewModel: ObservableObject {
         appResourceMonitor.setPollingInterval(
             highRefreshEnabled ? RefreshProfile.highAppInterval : RefreshProfile.lowAppInterval
         )
-        if isPerAppMonitoringEnabled {
-            appResourceMonitor.start()
-        }
+        appResourceMonitor.start()
     }
 
     private func refreshMenuBarTitle() {
