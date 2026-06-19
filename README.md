@@ -4,7 +4,7 @@ Native macOS menu bar resource monitor for CPU, RAM, temperature, disk, external
 
 [Download the latest DMG](https://github.com/klovinad/MacResourceBar/releases/download/v1.0/MacResourceBar-1.0.dmg)
 
-![MacResourceBar screenshot](Docs/macresourcebar-screenshot.png)
+![MacResourceBar screenshot](Docs/macresourcebar-dashboard-2026-06-19.png)
 
 MacResourceBar lives in your menu bar and opens a compact resource dashboard when you click it. It is built for quickly spotting what is using CPU, memory, disk, and network without opening Activity Monitor.
 
