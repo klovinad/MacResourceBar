@@ -6,12 +6,16 @@ struct MenuBarPreferences {
         static let appResourceFilter = "appResourceFilter"
         static let trayMetrics = "trayMetrics"
         static let trayMetricOrder = "trayMetricOrder"
+        static let menuBarLabelStyle = "menuBarLabelStyle"
         static let highRefreshEnabled = "highRefreshEnabled"
         static let appSortOrder = "appSortOrder"
         static let appSearchText = "appSearchText"
         static let activeAppsOnly = "activeAppsOnly"
         static let showHelperProcesses = "showHelperProcesses"
         static let backgroundOpacity = "backgroundOpacity"
+        static let externalDiskSelectionMode = "externalDiskSelectionMode"
+        static let selectedExternalDisks = "selectedExternalDisks"
+        static let customAppOrder = "customAppOrder"
     }
 
     private let defaults: UserDefaults
@@ -68,6 +72,29 @@ struct MenuBarPreferences {
     var trayMetricOrderRawValues: [String] {
         get { csvValues(forKey: Key.trayMetricOrder) }
         nonmutating set { defaults.set(newValue.joined(separator: ","), forKey: Key.trayMetricOrder) }
+    }
+
+    var menuBarLabelStyleRawValue: String? {
+        get { defaults.string(forKey: Key.menuBarLabelStyle) }
+        nonmutating set { defaults.set(newValue, forKey: Key.menuBarLabelStyle) }
+    }
+
+    var externalDiskSelectionModeRawValue: String? {
+        get { defaults.string(forKey: Key.externalDiskSelectionMode) }
+        nonmutating set { defaults.set(newValue, forKey: Key.externalDiskSelectionMode) }
+    }
+
+    var selectedExternalDiskIDs: [String] {
+        get { csvValues(forKey: Key.selectedExternalDisks) }
+        nonmutating set { defaults.set(newValue.joined(separator: ","), forKey: Key.selectedExternalDisks) }
+    }
+
+    var customAppOrder: [String] {
+        get {
+            defaults.stringArray(forKey: Key.customAppOrder)
+                ?? csvValues(forKey: Key.customAppOrder)
+        }
+        nonmutating set { defaults.set(newValue, forKey: Key.customAppOrder) }
     }
 
     private func bool(forKey key: String, defaultValue: Bool) -> Bool {

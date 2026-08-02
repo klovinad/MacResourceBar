@@ -1,11 +1,17 @@
 import Foundation
 
 struct AppSnapshotFilterState {
+    struct SnapshotLists {
+        let table: [AppResourceSnapshot]
+        let filtered: [AppResourceSnapshot]
+    }
+
     let snapshots: [AppResourceSnapshot]
     let searchText: String
     let resourceFilter: MenuBarViewModel.AppResourceFilter
     let threshold: Double
     let sortOrder: MenuBarViewModel.AppSortOrder
+    let customOrder: [String]
     let activeOnly: Bool
     let showHelperProcesses: Bool
 
@@ -14,32 +20,17 @@ struct AppSnapshotFilterState {
     }
 
     var filteredSnapshots: [AppResourceSnapshot] {
-        tableSnapshots
-            .filter(matchesSearch)
-            .filter(isActive)
-            .sorted(by: sort)
+        snapshotLists.filtered
     }
 
-    var filteredCountText: String {
-        let tableSnapshots = tableSnapshots
-        let count = tableSnapshots
-            .lazy
+    var snapshotLists: SnapshotLists {
+        let table = tableSnapshots
+        let customOrderIndex = customOrderIndex
+        let filtered = table
             .filter(matchesSearch)
             .filter(isActive)
-            .count
-        return "\(count) of \(tableSnapshots.count)"
-    }
-
-    var searchMatchCountText: String? {
-        let search = normalizedSearch
-        guard !search.isEmpty else { return nil }
-
-        let matchCount = tableSnapshots
-            .lazy
-            .filter { $0.displayName.localizedCaseInsensitiveContains(search) }
-            .count
-
-        return "\(matchCount) matches"
+            .sorted { sort($0, $1, customOrderIndex: customOrderIndex) }
+        return SnapshotLists(table: table, filtered: filtered)
     }
 
     private var normalizedSearch: String {
@@ -52,8 +43,18 @@ struct AppSnapshotFilterState {
     }
 
     private func isActive(_ snapshot: AppResourceSnapshot) -> Bool {
+        // Minimum is an independent filter. Previously it silently stopped
+        // working when "All" applications was selected.
+        if threshold > 0, activityValue(for: snapshot) < threshold {
+            return false
+        }
         guard activeOnly else { return true }
-        return activityValue(for: snapshot) >= threshold
+
+        // "Active" has one stable meaning regardless of the metric selected
+        // for Minimum.
+        return snapshot.cpuUsagePercent >= 0.1
+            || snapshot.diskBytesPerSecond >= 1_024
+            || snapshot.networkBytesPerSecond >= 1_024
     }
 
     private func activityValue(for snapshot: AppResourceSnapshot) -> Double {
@@ -71,7 +72,7 @@ struct AppSnapshotFilterState {
         }
     }
 
-    private func sort(_ lhs: AppResourceSnapshot, _ rhs: AppResourceSnapshot) -> Bool {
+    private func sort(_ lhs: AppResourceSnapshot, _ rhs: AppResourceSnapshot, customOrderIndex: [String: Int]) -> Bool {
         switch sortOrder {
         case .totalRate:
             return lhs.totalActivityScore != rhs.totalActivityScore
@@ -95,22 +96,90 @@ struct AppSnapshotFilterState {
                 : lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
         case .name:
             return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+        case .custom:
+            let lhsIndex = customOrderIndex[lhs.orderKey] ?? Int.max
+            let rhsIndex = customOrderIndex[rhs.orderKey] ?? Int.max
+            return lhsIndex != rhsIndex
+                ? lhsIndex < rhsIndex
+                : lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
         }
+    }
+
+    private var customOrderIndex: [String: Int] {
+        var result: [String: Int] = [:]
+        for (index, key) in customOrder.enumerated() where result[key] == nil {
+            result[key] = index
+        }
+        return result
     }
 
     private func groupedSnapshots() -> [AppResourceSnapshot] {
         var grouped: [String: AppResourceSnapshot] = [:]
 
-        for snapshot in snapshots {
-            let displayName = snapshot.groupedDisplayName
-            let key = snapshot.bundleIdentifier ?? displayName.lowercased()
+        // `parentAppName` performs several locale-aware searches. Compute it
+        // once per process instead of on every sort comparison and grouping
+        // pass; the old comparator called it hundreds of times per refresh.
+        let stableSnapshots = snapshots
+            .map { snapshot in
+                DecoratedSnapshot(
+                    snapshot: snapshot,
+                    helperParentName: AppResourceSnapshot.parentAppName(
+                        for: snapshot.processName
+                    )
+                )
+            }
+            .sorted {
+                if $0.isHelperProcess != $1.isHelperProcess {
+                    return !$0.isHelperProcess
+                }
+                let nameComparison = $0.snapshot.displayName.localizedCaseInsensitiveCompare(
+                    $1.snapshot.displayName
+                )
+                if nameComparison != .orderedSame {
+                    return nameComparison == .orderedAscending
+                }
+                return ($0.snapshot.pid ?? 0) < ($1.snapshot.pid ?? 0)
+            }
+
+        let parentCandidates: [ParentAppCandidate] = stableSnapshots.compactMap { decorated in
+            let snapshot = decorated.snapshot
+            guard
+                !decorated.isHelperProcess,
+                let bundleIdentifier = snapshot.bundleIdentifier,
+                !bundleIdentifier.isEmpty
+            else {
+                return nil
+            }
+            return ParentAppCandidate(
+                displayName: snapshot.displayName,
+                bundleIdentifier: bundleIdentifier
+            )
+        }
+
+        for decorated in stableSnapshots {
+            let snapshot = decorated.snapshot
+            let resolvedParent = resolvedParent(
+                for: snapshot,
+                isHelperProcess: decorated.isHelperProcess,
+                candidates: parentCandidates
+            )
+            // Do not relabel a helper unless its bundle identity proves which
+            // parent owns it. Name-only grouping can merge Chrome channels or
+            // embedded WebKit processes from unrelated apps.
+            let displayName = resolvedParent?.displayName ?? snapshot.displayName
+            let nameKey = displayName.folding(
+                options: [.caseInsensitive, .diacriticInsensitive],
+                locale: .current
+            )
+            let resolvedBundle = resolvedParent?.bundleIdentifier ?? snapshot.bundleIdentifier
+            let key = "\(nameKey)|bundle:\(resolvedBundle ?? "unbundled")"
 
             guard let current = grouped[key] else {
                 grouped[key] = AppResourceSnapshot(
                     processName: displayName,
-                    pid: snapshot.isHelperProcess ? nil : snapshot.pid,
+                    pid: nil,
                     pids: snapshot.pids,
-                    bundleIdentifier: snapshot.bundleIdentifier,
+                    bundleIdentifier: resolvedBundle,
                     icon: snapshot.icon,
                     cpuUsagePercent: snapshot.cpuUsagePercent,
                     ramBytes: snapshot.ramBytes,
@@ -141,6 +210,48 @@ struct AppSnapshotFilterState {
             )
         }
 
-        return Array(grouped.values)
+        return grouped.values.sorted {
+            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
+    }
+
+    private func resolvedParent(
+        for snapshot: AppResourceSnapshot,
+        isHelperProcess: Bool,
+        candidates: [ParentAppCandidate]
+    ) -> ParentAppCandidate? {
+        guard
+            isHelperProcess,
+            let helperBundle = snapshot.bundleIdentifier?.lowercased(),
+            !helperBundle.isEmpty
+        else {
+            return nil
+        }
+
+        let compatible = candidates.filter { candidate in
+            let parentBundle = candidate.bundleIdentifier.lowercased()
+            return helperBundle == parentBundle
+                || helperBundle.hasPrefix(parentBundle + ".")
+        }
+        guard let longestLength = compatible.map({ $0.bundleIdentifier.count }).max() else {
+            return nil
+        }
+        let strongest = compatible.filter { $0.bundleIdentifier.count == longestLength }
+        guard strongest.count == 1 else { return nil }
+        return strongest[0]
+    }
+
+    private struct ParentAppCandidate {
+        let displayName: String
+        let bundleIdentifier: String
+    }
+
+    private struct DecoratedSnapshot {
+        let snapshot: AppResourceSnapshot
+        let helperParentName: String?
+
+        var isHelperProcess: Bool {
+            helperParentName != nil
+        }
     }
 }

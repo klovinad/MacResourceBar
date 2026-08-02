@@ -2,254 +2,43 @@ import AppKit
 import Combine
 import SwiftUI
 
-private final class StatusSegmentView: NSView {
-    private enum Layout {
-        static let horizontalPadding: CGFloat = 0
-        static let verticalPadding: CGFloat = 0
-    }
-
-    private let label = NSTextField(labelWithString: "")
-    private var widthConstraint: NSLayoutConstraint?
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-
-        translatesAutoresizingMaskIntoConstraints = false
-
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        label.textColor = .labelColor
-        label.alignment = .left
-        label.lineBreakMode = .byClipping
-        label.cell?.wraps = false
-        label.cell?.usesSingleLineMode = true
-        addSubview(label)
-
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Layout.horizontalPadding),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Layout.horizontalPadding),
-            label.topAnchor.constraint(equalTo: topAnchor, constant: Layout.verticalPadding),
-            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -Layout.verticalPadding)
-        ])
-
-        setContentHuggingPriority(.required, for: .horizontal)
-        setContentCompressionResistancePriority(.required, for: .horizontal)
-        label.setContentHuggingPriority(.required, for: .horizontal)
-        label.setContentCompressionResistancePriority(.required, for: .horizontal)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    func setFixedWidth(_ width: CGFloat) {
-        if let widthConstraint {
-            widthConstraint.constant = width
-        } else {
-            let constraint = widthAnchor.constraint(equalToConstant: width)
-            constraint.isActive = true
-            widthConstraint = constraint
-        }
-    }
-
-    func update(text: String?) {
-        let nextText = text ?? ""
-        if label.stringValue != nextText {
-            label.stringValue = nextText
-        }
-
-        let shouldHide = text == nil
-        if isHidden != shouldHide {
-            isHidden = shouldHide
-        }
-    }
-}
-
-private final class StatusItemContentView: NSView {
-    private let stackView = NSStackView()
-    private let highRefreshSegment = StatusSegmentView()
-    private let cpuSegment = StatusSegmentView()
-    private let ramSegment = StatusSegmentView()
-    private let tempSegment = StatusSegmentView()
-    private let diskSegment = StatusSegmentView()
-    private let externalDiskSegment = StatusSegmentView()
-    private let networkSegment = StatusSegmentView()
-    private lazy var segmentsByMetric: [MenuBarViewModel.TrayMetric: StatusSegmentView] = [
-        .cpu: cpuSegment,
-        .memory: ramSegment,
-        .cpuTemp: tempSegment,
-        .disk: diskSegment,
-        .externalDisk: externalDiskSegment,
-        .network: networkSegment
-    ]
-    private var lastOrderedMetrics: [MenuBarViewModel.TrayMetric] = []
-    private var lastTextByMetric: [MenuBarViewModel.TrayMetric: String] = [:]
-    private var lastShowHighRefreshBadge = false
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-
-        translatesAutoresizingMaskIntoConstraints = false
-        setContentHuggingPriority(.required, for: .horizontal)
-        setContentCompressionResistancePriority(.required, for: .horizontal)
-
-        stackView.translatesAutoresizingMaskIntoConstraints = false
-        stackView.orientation = .horizontal
-        stackView.alignment = .centerY
-        stackView.spacing = 5
-        stackView.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
-        stackView.detachesHiddenViews = true
-        stackView.setContentHuggingPriority(.required, for: .horizontal)
-        stackView.setContentCompressionResistancePriority(.required, for: .horizontal)
-
-        highRefreshSegment.setFixedWidth(20)
-        cpuSegment.setFixedWidth(56)
-        ramSegment.setFixedWidth(56)
-        tempSegment.setFixedWidth(58)
-        diskSegment.setFixedWidth(66)
-        externalDiskSegment.setFixedWidth(58)
-        networkSegment.setFixedWidth(98)
-
-        addSubview(stackView)
-
-        NSLayoutConstraint.activate([
-            stackView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stackView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            stackView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            stackView.heightAnchor.constraint(lessThanOrEqualTo: heightAnchor)
-        ])
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
-    }
-
-    func update(
-        orderedMetrics: [MenuBarViewModel.TrayMetric],
-        textByMetric: [MenuBarViewModel.TrayMetric: String],
-        showHighRefreshBadge: Bool
-    ) {
-        let structureChanged = orderedMetrics != lastOrderedMetrics || showHighRefreshBadge != lastShowHighRefreshBadge
-
-        if structureChanged {
-            for arrangedSubview in stackView.arrangedSubviews {
-                stackView.removeArrangedSubview(arrangedSubview)
-                arrangedSubview.removeFromSuperview()
-            }
-
-            if showHighRefreshBadge {
-                stackView.addArrangedSubview(highRefreshSegment)
-            }
-
-            var seen = Set<MenuBarViewModel.TrayMetric>()
-            for metric in orderedMetrics {
-                guard seen.insert(metric).inserted else { continue }
-                guard let segment = segmentsByMetric[metric] else { continue }
-                stackView.addArrangedSubview(segment)
-            }
-        }
-
-        highRefreshSegment.update(text: showHighRefreshBadge ? "HR" : nil)
-        for metric in MenuBarViewModel.TrayMetric.allCases {
-            let nextText = orderedMetrics.contains(metric) ? textByMetric[metric] : nil
-            if structureChanged || lastTextByMetric[metric] != nextText {
-                segmentsByMetric[metric]?.update(text: nextText)
-            }
-        }
-
-        lastOrderedMetrics = orderedMetrics
-        lastTextByMetric = textByMetric
-        lastShowHighRefreshBadge = showHighRefreshBadge
-
-        if structureChanged {
-            layoutSubtreeIfNeeded()
-            invalidateIntrinsicContentSize()
-        }
-    }
-
-    func requiredWidth() -> CGFloat {
-        fittingSize.width
-    }
-}
-
 @MainActor
-private final class StatusItemEventView: NSView {
-    var onPrimaryClick: (() -> Void)?
-    var onSecondaryClick: ((NSEvent) -> Void)?
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        translatesAutoresizingMaskIntoConstraints = false
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-        true
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        bounds.contains(point) ? self : nil
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        onPrimaryClick?()
-    }
-
-    override func rightMouseDown(with event: NSEvent) {
-        onSecondaryClick?(event)
-    }
-
-    override func otherMouseDown(with event: NSEvent) {
-        if event.buttonNumber == 1 {
-            onSecondaryClick?(event)
-        } else {
-            super.otherMouseDown(with: event)
-        }
-    }
-}
-
-@MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private enum Constants {
-        static let popoverSizeExpanded = NSSize(width: 820, height: 720)
-        static let popoverSizeCompact = NSSize(width: 820, height: 680)
+        static let popoverSizeExpanded = NSSize(width: 860, height: 620)
+        static let popoverSizeCompact = NSSize(width: 860, height: 620)
         static let minimumStatusItemLength: CGFloat = 28
-        static let maximumStatusItemLength: CGFloat = 760
-        static let maximumAdaptiveStatusItemLength: CGFloat = 430
-        static let maximumStatusItemScreenFraction: CGFloat = 0.36
-        static let statusItemContentPadding: CGFloat = 6
+        static let statusItemHorizontalPadding: CGFloat = 8
+        static let miniStatusItemHorizontalPadding: CGFloat = 4
+        static let statusItemClipAllowance: CGFloat = 3
+        static let minimumPopoverDimension: CGFloat = 28
         static let popoverScreenMargin: CGFloat = 8
-        static let fallbackStatusSymbolName = "waveform.path.ecg"
+        static let fallbackStatusTitle = "…"
+        static let miniStatusLabelValueGap: CGFloat = 4
+        static let miniStatusMinimumGroupGap: CGFloat = 6
     }
 
     let viewModel = MenuBarViewModel()
     private let popover = NSPopover()
     private let statusMenu = NSMenu()
     private var statusItem: NSStatusItem?
-    private var statusItemContentView: StatusItemContentView?
+    private var renderedStatusItemKey: String?
+    private var renderedStatusItemToolTip: String?
+    private var renderedStatusItemAccessibilityValue: String?
+    private var appliedStatusItemLength: CGFloat?
     private var menuBarTitleObserver: AnyCancellable?
-    private var popoverLayoutObserver: AnyCancellable?
     private var trayOrderingObserver: AnyCancellable?
     private var settingsObserver: NSObjectProtocol?
     private var statusItemEventMonitor: Any?
     private var globalStatusItemEventMonitor: Any?
+    private var popoverDismissEventMonitor: Any?
+    private var globalPopoverDismissEventMonitor: Any?
     private var settingsWindow: NSWindow?
     private var pinnedPopoverMinX: CGFloat?
     private var pinnedPopoverTopY: CGFloat?
-    private var suppressPrimaryClickUntil = Date.distantPast
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.regular)
+        NSApp.setActivationPolicy(.accessory)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -257,8 +46,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         bindViewModel()
         observeSettingsRequests()
         ensureStatusItem()
-        showPopoverAfterInitialLaunch()
-        showPopoverForVerificationIfRequested()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -275,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSEvent.removeMonitor(globalStatusItemEventMonitor)
             self.globalStatusItemEventMonitor = nil
         }
+        removePopoverDismissEventMonitor()
         if let settingsObserver {
             NotificationCenter.default.removeObserver(settingsObserver)
         }
@@ -303,60 +91,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func configurePopover() {
-        popover.behavior = .transient
+        // Native drag sessions are one of the interactions for which AppKit's
+        // transient-popover closing behavior is intentionally unspecified.
+        // Own dismissal so a metric can be dropped before the popover closes.
+        popover.behavior = .applicationDefined
+        // The panel should feel immediate and stable; the previous popover
+        // animation visibly lagged behind rapid menu-bar updates.
         popover.animates = false
+        popover.delegate = self
         popover.contentSize = Constants.popoverSizeExpanded
-        popover.contentViewController = NSHostingController(
-            rootView: MenuBarPopoverView(viewModel: viewModel)
-        )
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        removePopoverDismissEventMonitor()
+        pinnedPopoverMinX = nil
+        pinnedPopoverTopY = nil
+        viewModel.setPopoverVisible(false)
+        // A hidden NSHostingController still observes every @Published metric
+        // and lays out the full process table. Detach it so a closed menu-bar
+        // app is genuinely idle; a fresh controller is cheap to create on open.
+        popover.contentViewController = nil
+        updateStatusItemTitle()
+        clearStatusItemHighlight()
+        DispatchQueue.main.async { [weak self] in
+            self?.clearStatusItemHighlight()
+        }
     }
 
     private func configureStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         guard let button = item.button else { return }
 
+        statusItem = item
         item.autosaveName = nil
         item.behavior = []
         item.isVisible = true
         configureStatusMenu()
         button.target = self
-        button.action = #selector(togglePopover(_:))
-        button.sendAction(on: [.leftMouseUp, .rightMouseDown])
-        button.lineBreakMode = .byTruncatingTail
+        button.action = #selector(activateStatusItem(_:))
+        button.sendAction(on: [.leftMouseUp])
+        if let buttonCell = button.cell as? NSButtonCell {
+            buttonCell.highlightsBy = []
+            buttonCell.showsStateBy = []
+            // Tab-aligned Mini titles must always remain one physical line.
+            // Without single-line mode AppKit can reflow the title after the
+            // popover detaches, placing it below the menu bar's clip rect.
+            buttonCell.wraps = false
+            buttonCell.usesSingleLineMode = true
+            buttonCell.lineBreakMode = .byClipping
+        }
+        button.lineBreakMode = .byClipping
+        button.alignment = .left
         button.image = nil
         button.title = ""
         button.attributedTitle = NSAttributedString(string: "")
+        button.setAccessibilityLabel("MacResourceBar")
+
         installStatusItemEventMonitor()
-
-        let contentView = StatusItemContentView(frame: .zero)
-        contentView.isHidden = false
-        button.addSubview(contentView)
-        NSLayoutConstraint.activate([
-            contentView.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 3),
-            contentView.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -3),
-            contentView.centerYAnchor.constraint(equalTo: button.centerYAnchor),
-            contentView.heightAnchor.constraint(equalToConstant: 18)
-        ])
-        statusItemContentView = contentView
-
-        let eventView = StatusItemEventView(frame: .zero)
-        eventView.onPrimaryClick = { [weak self] in
-            self?.togglePopoverFromStatusItem()
-        }
-        eventView.onSecondaryClick = { [weak self] event in
-            self?.showStatusMenu(for: event)
-        }
-        button.addSubview(eventView)
-        NSLayoutConstraint.activate([
-            eventView.leadingAnchor.constraint(equalTo: button.leadingAnchor),
-            eventView.trailingAnchor.constraint(equalTo: button.trailingAnchor),
-            eventView.topAnchor.constraint(equalTo: button.topAnchor),
-            eventView.bottomAnchor.constraint(equalTo: button.bottomAnchor)
-        ])
-
         updateStatusItemTitle()
-
-        statusItem = item
     }
 
     private func ensureStatusItem() {
@@ -367,6 +159,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let existingItem = statusItem {
             NSStatusBar.system.removeStatusItem(existingItem)
             statusItem = nil
+            renderedStatusItemKey = nil
+            renderedStatusItemToolTip = nil
+            renderedStatusItemAccessibilityValue = nil
+            appliedStatusItemLength = nil
         }
 
         configureStatusItem()
@@ -412,23 +208,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func installStatusItemEventMonitor() {
         guard statusItemEventMonitor == nil else { return }
-        statusItemEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+        statusItemEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.rightMouseDown]) { [weak self] event in
             guard let self else { return event }
             guard self.eventHitsStatusItemButton(event) else { return event }
+            self.showStatusMenuFromStatusItem()
+            return nil
+        }
 
-            if event.type == .rightMouseDown || event.modifierFlags.contains(.control) {
+        globalStatusItemEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.rightMouseDown]) { [weak self] event in
+            let screenPoint = event.locationInWindow
+            Task { @MainActor [weak self] in
+                guard let self, self.screenPointHitsStatusItemButton(screenPoint) else { return }
                 self.showStatusMenuFromStatusItem()
+            }
+        }
+    }
+
+    private func installPopoverDismissEventMonitor() {
+        guard popoverDismissEventMonitor == nil else { return }
+
+        popoverDismissEventMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseUp, .rightMouseUp, .otherMouseUp, .keyDown]
+        ) { [weak self] event in
+            guard let self, self.popover.isShown else { return event }
+
+            if event.type == .keyDown, event.keyCode == 53 {
+                self.popover.performClose(nil)
                 return nil
             }
 
+            if event.type == .leftMouseUp
+                || event.type == .rightMouseUp
+                || event.type == .otherMouseUp
+            {
+                let popoverWindow = self.popover.contentViewController?.view.window
+                let statusItemWindow = self.statusItem?.button?.window
+                if let eventWindow = event.window,
+                   eventWindow !== popoverWindow,
+                   eventWindow !== statusItemWindow
+                {
+                    self.popover.performClose(nil)
+                }
+            }
             return event
         }
 
-        globalStatusItemEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.rightMouseDown]) { [weak self] _ in
+        globalPopoverDismissEventMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseUp, .rightMouseUp, .otherMouseUp]
+        ) { [weak self] event in
+            let screenPoint = event.locationInWindow
             Task { @MainActor [weak self] in
-                guard let self, self.mouseLocationHitsStatusItemButton() else { return }
-                self.showStatusMenuFromStatusItem()
+                guard let self, self.popover.isShown else { return }
+                guard !self.screenPointHitsStatusItemButton(screenPoint) else { return }
+                guard !self.screenPointHitsPopover(screenPoint) else { return }
+                self.popover.performClose(nil)
             }
+        }
+    }
+
+    private func removePopoverDismissEventMonitor() {
+        if let popoverDismissEventMonitor {
+            NSEvent.removeMonitor(popoverDismissEventMonitor)
+            self.popoverDismissEventMonitor = nil
+        }
+        if let globalPopoverDismissEventMonitor {
+            NSEvent.removeMonitor(globalPopoverDismissEventMonitor)
+            self.globalPopoverDismissEventMonitor = nil
         }
     }
 
@@ -441,14 +286,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return button.bounds.contains(point)
     }
 
-    private func mouseLocationHitsStatusItemButton() -> Bool {
+    private func screenPointHitsStatusItemButton(_ screenPoint: NSPoint) -> Bool {
         guard let button = statusItem?.button, let window = button.window else {
             return false
         }
 
         let buttonFrameInWindow = button.convert(button.bounds, to: nil)
         let buttonFrameOnScreen = window.convertToScreen(buttonFrameInWindow)
-        return buttonFrameOnScreen.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation)
+        return buttonFrameOnScreen.insetBy(dx: -2, dy: -2).contains(screenPoint)
+    }
+
+    private func screenPointHitsPopover(_ screenPoint: NSPoint) -> Bool {
+        guard let window = popover.contentViewController?.view.window else {
+            return false
+        }
+        return window.frame.contains(screenPoint)
     }
 
     private func bindViewModel() {
@@ -458,53 +310,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.updateStatusItemTitle()
             }
 
-        popoverLayoutObserver = viewModel.$appSnapshots
-            .combineLatest(
-                viewModel.$appDisplayThresholdBytesPerSecond,
-                viewModel.$perAppStatusMessage
-            )
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _, _, _ in
-                self?.updatePopoverSize()
+        let externalDiskStructure = viewModel.$externalDiskActivities
+            .map { activities in
+                activities.map { "\($0.bsdName)|\($0.displayName)" }
             }
+            .removeDuplicates()
 
         trayOrderingObserver = viewModel.$trayMetricOrder
+            .removeDuplicates()
             .combineLatest(
-                viewModel.$selectedTrayMetrics,
-                viewModel.$externalDiskActivities
+                viewModel.$selectedTrayMetrics.removeDuplicates(),
+                externalDiskStructure,
+                viewModel.$menuBarLabelStyle.removeDuplicates()
             )
             .receive(on: RunLoop.main)
-            .sink { [weak self] _, _, _ in
+            .sink { [weak self] _, _, _, _ in
                 self?.updateStatusItemTitle(force: true)
             }
     }
 
-    @objc
-    private func togglePopover(_ sender: AnyObject?) {
-        ensureStatusItem()
-        guard statusItem?.button != nil else { return }
-
-        if NSApp.currentEvent?.type == .rightMouseDown {
-            if let button = statusItem?.button, let event = NSApp.currentEvent {
-                showStatusMenu(for: event, in: button)
-            } else {
-                showStatusMenuForCurrentEvent()
-            }
-            return
-        }
-
-        togglePopoverFromStatusItem()
-    }
-
     private func togglePopoverFromStatusItem() {
-        guard Date() >= suppressPrimaryClickUntil else { return }
-
         if popover.isShown {
-            pinnedPopoverMinX = nil
-            pinnedPopoverTopY = nil
             popover.performClose(nil)
         } else {
             showPopover()
+        }
+    }
+
+    @objc
+    private func activateStatusItem(_ sender: AnyObject?) {
+        if NSApp.currentEvent?.modifierFlags.contains(.control) == true {
+            showStatusMenuForCurrentEvent()
+        } else {
+            togglePopoverFromStatusItem()
         }
     }
 
@@ -520,10 +358,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showStatusMenuFromStatusItem() {
         guard let button = statusItem?.button else { return }
-        suppressPrimaryClickUntil = Date().addingTimeInterval(0.45)
         if popover.isShown {
-            pinnedPopoverMinX = nil
-            pinnedPopoverTopY = nil
             popover.performClose(nil)
         }
         updateStatusMenu()
@@ -532,8 +367,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showStatusMenu(for event: NSEvent, in button: NSStatusBarButton) {
         if popover.isShown {
-            pinnedPopoverMinX = nil
-            pinnedPopoverTopY = nil
             popover.performClose(nil)
         }
         updateStatusMenu()
@@ -543,8 +376,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc
     private func togglePopoverFromMenu(_ sender: AnyObject?) {
         if popover.isShown {
-            pinnedPopoverMinX = nil
-            pinnedPopoverTopY = nil
             popover.performClose(sender)
         } else {
             showPopover()
@@ -565,13 +396,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func toggleLaunchAtLoginFromMenu(_ sender: AnyObject?) {
         viewModel.setLaunchAtLoginEnabled(!viewModel.launchAtLoginEnabled)
         updateStatusMenu()
+        if let message = viewModel.settingsErrorMessage {
+            let alert = NSAlert()
+            alert.messageText = "Launch at Login"
+            alert.informativeText = message
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
     }
 
     @objc
     private func toggleHighRefreshFromMenu(_ sender: AnyObject?) {
         viewModel.setHighRefreshEnabled(!viewModel.highRefreshEnabled)
         updateStatusMenu()
-        updateStatusItemTitle(force: true)
+        updateStatusItemTitle()
     }
 
     private func updateStatusMenu() {
@@ -593,6 +432,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showSettingsWindow() {
+        if popover.isShown {
+            popover.performClose(nil)
+        }
+
         if let settingsWindow {
             settingsWindow.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -604,7 +447,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.title = "MacResourceBar Settings"
         window.styleMask = [.titled, .closable, .miniaturizable]
         window.isReleasedWhenClosed = false
-        window.setContentSize(NSSize(width: 460, height: 520))
+        window.setContentSize(NSSize(width: 520, height: 560))
         window.center()
         settingsWindow = window
         window.makeKeyAndOrderFront(nil)
@@ -615,39 +458,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ensureStatusItem()
         guard let button = statusItem?.button else { return }
 
+        attachPopoverContentIfNeeded()
         updatePopoverSize()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        installPopoverDismissEventMonitor()
         if let window = popover.contentViewController?.view.window {
-            window.isOpaque = false
-            window.backgroundColor = .clear
-            let clampedOrigin = clampedPopoverOrigin(for: window.frame, on: screenForPopover(window: window))
-            window.setFrameOrigin(clampedOrigin)
-            pinnedPopoverMinX = clampedOrigin.x
-            pinnedPopoverTopY = clampedOrigin.y + window.frame.height
-            window.makeKey()
+            let origin = clampedPopoverOrigin(
+                for: window.frame,
+                on: screenForPopover(window: window)
+            )
+            window.setFrameOrigin(origin)
+            pinnedPopoverMinX = origin.x
+            pinnedPopoverTopY = origin.y + window.frame.height
         } else {
             pinnedPopoverMinX = nil
             pinnedPopoverTopY = nil
         }
         NSApp.activate(ignoringOtherApps: true)
-    }
-
-    private func showPopoverForVerificationIfRequested() {
-        guard ProcessInfo.processInfo.environment["NETWORK_MENU_MONITOR_SHOW_POPOVER"] == "1" else { return }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.showPopover()
+        viewModel.setPopoverVisible(true)
+        clearStatusItemHighlight()
+        DispatchQueue.main.async { [weak self] in
+            self?.clearStatusItemHighlight()
         }
     }
 
-    private func showPopoverAfterInitialLaunch() {
-        guard ProcessInfo.processInfo.environment["MAC_RESOURCE_BAR_START_HIDDEN"] != "1" else { return }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-            guard let self, !self.popover.isShown else { return }
-            self.ensureStatusItem()
-            self.showPopover()
-        }
+    private func attachPopoverContentIfNeeded() {
+        guard popover.contentViewController == nil else { return }
+        popover.contentViewController = NSHostingController(
+            rootView: MenuBarPopoverView(viewModel: viewModel)
+        )
     }
 
     private func updatePopoverSize() {
@@ -655,97 +494,340 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let maxWidth = (screenFrame?.width ?? Constants.popoverSizeCompact.width) - (Constants.popoverScreenMargin * 2)
         let maxHeight = (screenFrame?.height ?? Constants.popoverSizeCompact.height) - (Constants.popoverScreenMargin * 2)
         popover.contentSize = NSSize(
-            width: min(Constants.popoverSizeCompact.width, max(Constants.minimumStatusItemLength, maxWidth)),
-            height: min(Constants.popoverSizeCompact.height, max(Constants.minimumStatusItemLength, maxHeight))
+            width: min(Constants.popoverSizeCompact.width, max(Constants.minimumPopoverDimension, maxWidth)),
+            height: min(Constants.popoverSizeCompact.height, max(Constants.minimumPopoverDimension, maxHeight))
         )
+    }
+
+    private struct StatusItemPresentation {
+        let effectiveStyle: MenuBarViewModel.MenuBarLabelStyle
+        let title: NSAttributedString
+        let length: CGFloat
+    }
+
+    private func updateStatusItemTitle(force: Bool = false) {
+        guard let item = statusItem, let button = item.button else { return }
+
+        let preferredStyle = viewModel.menuBarLabelStyle
+        let presentation = statusItemPresentation(preferredStyle: preferredStyle)
+        // Include attributed layout and reserved width, not only visible text.
+        // Mini can keep the same characters while its tab stops change after a
+        // disk is connected, renamed, or reordered.
+        let titleKey = "\(presentation.effectiveStyle.rawValue)|\(presentation.length)|\(presentation.title.hash)|\(presentation.title.string)"
+        var lengthChanged = false
+
+        if renderedStatusItemKey != titleKey {
+            button.attributedTitle = presentation.title
+            renderedStatusItemKey = titleKey
+        }
+
+        if appliedStatusItemLength.map({ abs($0 - presentation.length) > 0.5 }) ?? true {
+            item.length = presentation.length
+            appliedStatusItemLength = presentation.length
+            lengthChanged = true
+        }
+
+        let accessibilityValue = viewModel.menuBarAccessibilityComponents.joined(separator: ", ")
+        if renderedStatusItemAccessibilityValue != accessibilityValue {
+            button.setAccessibilityValue(accessibilityValue)
+            renderedStatusItemAccessibilityValue = accessibilityValue
+        }
+
+        var toolTipLines = [
+            viewModel.menuBarAccessibilityComponents.joined(separator: " · "),
+            viewModel.highRefreshEnabled ? "Updates every second" : "Updates every 10 seconds"
+        ]
+        if presentation.effectiveStyle != preferredStyle {
+            toolTipLines.append(
+                "\(preferredStyle.label) automatically shown as \(presentation.effectiveStyle.label) to fit"
+            )
+        }
+        let toolTip = toolTipLines.joined(separator: "\n")
+        if renderedStatusItemToolTip != toolTip {
+            button.toolTip = toolTip
+            renderedStatusItemToolTip = toolTip
+        }
+
+        guard popover.isShown, lengthChanged || force else { return }
         pinPopoverPositionIfNeeded()
+        DispatchQueue.main.async { [weak self] in
+            self?.pinPopoverPositionIfNeeded()
+        }
     }
 
-    private func updateStatusItemTitle() {
-        updateStatusItemTitle(force: false)
-    }
-
-    private func updateStatusItemTitle(force: Bool) {
-        // Freeze status item mutations while popover is shown to avoid any anchor drift.
-        if popover.isShown && !force {
-            return
-        }
-        let orderedMetrics = viewModel.orderedVisibleTrayMetrics
-        var dedupedMetrics: [MenuBarViewModel.TrayMetric] = []
-        var seen = Set<MenuBarViewModel.TrayMetric>()
-        for metric in orderedMetrics where seen.insert(metric).inserted {
-            dedupedMetrics.append(metric)
+    private func statusItemPresentation(
+        preferredStyle: MenuBarViewModel.MenuBarLabelStyle
+    ) -> StatusItemPresentation {
+        let candidateStyles: [MenuBarViewModel.MenuBarLabelStyle]
+        switch preferredStyle {
+        case .full:
+            candidateStyles = [.full, .compact, .mini]
+        case .compact:
+            candidateStyles = [.compact, .mini]
+        case .mini:
+            candidateStyles = [.mini]
         }
 
-        var visibleMetrics = dedupedMetrics
-        if visibleMetrics.isEmpty {
-            visibleMetrics = [.network]
-        }
+        let maximumLength = maximumStatusItemLength()
+        var fallback: StatusItemPresentation?
 
-        var textByMetric = visibleMetrics.reduce(into: [MenuBarViewModel.TrayMetric: String]()) { partial, metric in
-            partial[metric] = viewModel.trayText(for: metric)
-        }
-
-        statusItemContentView?.update(
-            orderedMetrics: visibleMetrics,
-            textByMetric: textByMetric,
-            showHighRefreshBadge: viewModel.highRefreshEnabled
-        )
-
-        statusItemContentView?.isHidden = false
-        statusItem?.button?.title = ""
-        statusItem?.button?.attributedTitle = NSAttributedString(string: "")
-        statusItem?.button?.image = nil
-        if !popover.isShown || force {
-            let maximumLength = maximumStatusItemLength()
-            var measuredWidth = ceil((statusItemContentView?.requiredWidth() ?? 0) + Constants.statusItemContentPadding)
-            var targetWidth = measuredWidth
-
-            if measuredWidth > maximumLength {
-                textByMetric = visibleMetrics.reduce(into: [MenuBarViewModel.TrayMetric: String]()) { partial, metric in
-                    partial[metric] = viewModel.compactTrayText(for: metric)
-                }
-                statusItemContentView?.update(
-                    orderedMetrics: visibleMetrics,
-                    textByMetric: textByMetric,
-                    showHighRefreshBadge: viewModel.highRefreshEnabled
-                )
-                measuredWidth = ceil((statusItemContentView?.requiredWidth() ?? 0) + Constants.statusItemContentPadding)
-                targetWidth = min(measuredWidth, Constants.maximumStatusItemLength)
+        for style in candidateStyles {
+            let separator = viewModel.menuBarComponentSeparator(for: style)
+            let slots = viewModel.menuBarDisplaySlots(for: style)
+            guard slots.allSatisfy({ $0.text.count <= $0.widthTemplate.count }) else {
+                continue
             }
 
-            statusItem?.length = max(targetWidth, Constants.minimumStatusItemLength)
+            let title: NSAttributedString
+            let contentWidth: CGFloat
+            if style == .mini, let miniLayout = miniStatusItemTitle(slots: slots) {
+                title = miniLayout.title
+                contentWidth = miniLayout.width
+            } else {
+                title = statusItemTitle(
+                    components: slots.map {
+                        stableStatusItemComponent(
+                            text: $0.text,
+                            widthTemplate: $0.widthTemplate
+                        )
+                    },
+                    separator: separator,
+                    style: style
+                )
+                let template = statusItemTitle(
+                    components: slots.map(\.widthTemplate),
+                    separator: separator,
+                    style: style
+                )
+                contentWidth = max(template.size().width, title.size().width)
+            }
+            let naturalLength = max(
+                Constants.minimumStatusItemLength,
+                ceil(contentWidth)
+                    + (style == .mini
+                        ? Constants.miniStatusItemHorizontalPadding
+                        : Constants.statusItemHorizontalPadding)
+                    + Constants.statusItemClipAllowance
+            )
+            let presentation = StatusItemPresentation(
+                effectiveStyle: style,
+                title: title,
+                length: naturalLength
+            )
+            fallback = presentation
+
+            if naturalLength <= maximumLength {
+                return presentation
+            }
         }
-        statusItem?.button?.needsLayout = true
-        pinPopoverPositionIfNeeded()
+
+        return fallback ?? StatusItemPresentation(
+            effectiveStyle: .mini,
+            title: NSAttributedString(string: Constants.fallbackStatusTitle),
+            length: Constants.minimumStatusItemLength
+        )
     }
 
     private func pinPopoverPositionIfNeeded() {
         guard popover.isShown else { return }
         guard let targetMinX = pinnedPopoverMinX, let targetTopY = pinnedPopoverTopY else { return }
         guard let window = popover.contentViewController?.view.window else { return }
-        let requestedOrigin = NSPoint(x: targetMinX, y: targetTopY - window.frame.height)
+
+        let requestedOrigin = NSPoint(
+            x: targetMinX,
+            y: targetTopY - window.frame.height
+        )
         let requestedFrame = NSRect(origin: requestedOrigin, size: window.frame.size)
-        let targetOrigin = clampedPopoverOrigin(for: requestedFrame, on: screenForPopover(window: window))
+        let targetOrigin = clampedPopoverOrigin(
+            for: requestedFrame,
+            on: screenForPopover(window: window)
+        )
         if window.frame.origin != targetOrigin {
             window.setFrameOrigin(targetOrigin)
         }
     }
 
-    private func maximumStatusItemLength() -> CGFloat {
-        let screenWidth = screenForPopover(window: nil)?.visibleFrame.width ?? Constants.maximumStatusItemLength
-        let adaptiveLength = min(
-            Constants.maximumAdaptiveStatusItemLength,
-            screenWidth * Constants.maximumStatusItemScreenFraction
+    private func statusItemTitle(
+        components: [String],
+        separator: String,
+        style: MenuBarViewModel.MenuBarLabelStyle
+    ) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        let font = statusItemFont(for: style)
+        let componentAttributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.labelColor
+        ]
+        let separatorAttributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.secondaryLabelColor
+        ]
+
+        for (index, component) in components.enumerated() {
+            if index > 0 {
+                result.append(NSAttributedString(string: separator, attributes: separatorAttributes))
+            }
+            result.append(NSAttributedString(string: component, attributes: componentAttributes))
+        }
+        return result
+    }
+
+    private struct MiniStatusItemLayout {
+        let title: NSAttributedString
+        let width: CGFloat
+    }
+
+    /// Mini keeps its total width stable while distributing the unused value
+    /// reserve evenly between groups. This keeps every visible label/value gap
+    /// and every visible value/next-label gap consistent at the same time.
+    private func miniStatusItemTitle(
+        slots: [MenuBarViewModel.MenuBarDisplaySlot]
+    ) -> MiniStatusItemLayout? {
+        let font = statusItemFont(for: .mini)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.labelColor
+        ]
+        let measuredSlots = slots.compactMap { slot -> (
+            component: (label: String, value: String),
+            labelWidth: CGFloat,
+            valueWidth: CGFloat,
+            reservedValueWidth: CGFloat
+        )? in
+            guard
+                let component = splitMiniStatusComponent(slot.text),
+                let template = splitMiniStatusComponent(slot.widthTemplate)
+            else {
+                return nil
+            }
+
+            let valueWidth = miniStatusTextWidth(component.value, attributes: attributes)
+            return (
+                component: component,
+                labelWidth: miniStatusTextWidth(component.label, attributes: attributes),
+                valueWidth: valueWidth,
+                reservedValueWidth: max(
+                    valueWidth,
+                    miniStatusTextWidth(template.value, attributes: attributes)
+                )
+            )
+        }
+        guard measuredSlots.count == slots.count, !measuredSlots.isEmpty else { return nil }
+
+        let unusedValueWidth = measuredSlots.reduce(CGFloat.zero) { result, slot in
+            result + (slot.reservedValueWidth - slot.valueWidth)
+        }
+        let groupCount = measuredSlots.count - 1
+        let resolvedGroupGap = groupCount > 0
+            ? Constants.miniStatusMinimumGroupGap
+                + (unusedValueWidth / CGFloat(groupCount))
+            : Constants.miniStatusMinimumGroupGap
+        let reservedWidth = measuredSlots.reduce(CGFloat.zero) { result, slot in
+            result
+                + slot.labelWidth
+                + Constants.miniStatusLabelValueGap
+                + slot.reservedValueWidth
+        } + (CGFloat(groupCount) * Constants.miniStatusMinimumGroupGap)
+
+        var title = ""
+        var tabStops: [NSTextTab] = []
+        var currentX: CGFloat = 0
+
+        for (index, slot) in measuredSlots.enumerated() {
+            title += slot.component.label
+            currentX += slot.labelWidth
+
+            let valueStart = currentX + Constants.miniStatusLabelValueGap
+            tabStops.append(NSTextTab(textAlignment: .left, location: valueStart))
+            title += "\t\(slot.component.value)"
+            currentX = valueStart + slot.valueWidth
+
+            if index < measuredSlots.count - 1 {
+                let nextLabelStart = currentX + resolvedGroupGap
+                tabStops.append(NSTextTab(textAlignment: .left, location: nextLabelStart))
+                title += "\t"
+                currentX = nextLabelStart
+            }
+        }
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.defaultTabInterval = 0
+        paragraph.lineBreakMode = .byClipping
+        paragraph.tabStops = tabStops
+
+        let attributedTitle = NSMutableAttributedString(string: title, attributes: attributes)
+        attributedTitle.addAttribute(
+            .paragraphStyle,
+            value: paragraph,
+            range: NSRange(location: 0, length: attributedTitle.length)
         )
-        return min(Constants.maximumStatusItemLength, max(Constants.minimumStatusItemLength, adaptiveLength))
+        return MiniStatusItemLayout(title: attributedTitle, width: reservedWidth)
+    }
+
+    private func splitMiniStatusComponent(_ component: String) -> (label: String, value: String)? {
+        guard let separatorIndex = component.firstIndex(of: " ") else { return nil }
+        let valueStart = component.index(after: separatorIndex)
+        return (
+            String(component[..<separatorIndex]),
+            String(component[valueStart...])
+        )
+    }
+
+    private func miniStatusTextWidth(
+        _ text: String,
+        attributes: [NSAttributedString.Key: Any]
+    ) -> CGFloat {
+        NSAttributedString(string: text, attributes: attributes).size().width
+    }
+
+    /// Full and Compact reserve their measured character slots so neither the
+    /// status item nor following metrics move as live values change.
+    private func stableStatusItemComponent(
+        text: String,
+        widthTemplate: String
+    ) -> String {
+        let missingCharacters = max(0, widthTemplate.count - text.count)
+        return text + String(repeating: " ", count: missingCharacters)
+    }
+
+    private func statusItemFont(
+        for style: MenuBarViewModel.MenuBarLabelStyle
+    ) -> NSFont {
+        switch style {
+        case .full:
+            NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
+        case .compact:
+            NSFont.monospacedSystemFont(ofSize: 11.5, weight: .medium)
+        case .mini:
+            NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
+        }
+    }
+
+    private func clearStatusItemHighlight() {
+        guard let button = statusItem?.button else { return }
+        button.state = .off
+        button.highlight(false)
+    }
+
+    private func maximumStatusItemLength() -> CGFloat {
+        let screenWidth = screenForPopover(window: nil)?.frame.width ?? 1_440
+        return max(
+            Constants.minimumStatusItemLength,
+            min(
+                screenWidth - 48,
+                min(720, screenWidth * 0.30)
+            )
+        )
     }
 
     private func screenForPopover(window: NSWindow?) -> NSScreen? {
         window?.screen ?? statusItem?.button?.window?.screen ?? NSScreen.main
     }
 
-    private func clampedPopoverOrigin(for frame: NSRect, on screen: NSScreen?) -> NSPoint {
+    private func clampedPopoverOrigin(
+        for frame: NSRect,
+        on screen: NSScreen?
+    ) -> NSPoint {
         guard let screen else { return frame.origin }
 
         let visibleFrame = screen.visibleFrame.insetBy(

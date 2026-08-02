@@ -4,6 +4,21 @@ import AppKit
 
 final class CPUProcessMonitor {
     private var previousCPUByPid: [pid_t: CPUSamplePoint] = [:]
+    private let nanosecondsPerCPUTimeTick: Double = {
+        var timebase = mach_timebase_info_data_t()
+        guard mach_timebase_info(&timebase) == KERN_SUCCESS, timebase.denom != 0 else {
+            return 1
+        }
+        return Double(timebase.numer) / Double(timebase.denom)
+    }()
+
+    func reset() {
+        previousCPUByPid.removeAll(keepingCapacity: false)
+    }
+
+    func reset(pid: pid_t) {
+        previousCPUByPid.removeValue(forKey: pid)
+    }
 
     func sample(activePids: Set<pid_t>) -> [pid_t: Double] {
         let now = CFAbsoluteTimeGetCurrent()
@@ -19,8 +34,15 @@ final class CPUProcessMonitor {
                     let delta = totalCPU >= previous.totalCPUTime
                         ? totalCPU - previous.totalCPUTime
                         : 0
-                    let percent = (Double(delta) / (elapsed * 1_000_000_000)) * 100
-                    result[pid] = max(percent, 0)
+                    // proc_taskinfo reports accumulated CPU time in Mach
+                    // absolute-time ticks, not nanoseconds on every Mac.
+                    let cpuNanoseconds = Double(delta) * nanosecondsPerCPUTimeTick
+                    let processScalePercent = (cpuNanoseconds / (elapsed * 1_000_000_000)) * 100
+                    // Match Activity Monitor's process scale: one fully used
+                    // logical core is 100%, and multi-threaded apps may exceed it.
+                    // Dividing by the machine's core count made normal activity
+                    // round down to an apparent zero for almost every process.
+                    result[pid] = max(processScalePercent, 0)
                 }
             }
 

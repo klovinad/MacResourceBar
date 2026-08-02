@@ -19,6 +19,11 @@ final class DiskProcessMonitor {
     private var previousRUsageByPid: [pid_t: DiskSamplePoint] = [:]
     private var activePids: Set<pid_t> = []
 
+    func reset() {
+        previousRUsageByPid.removeAll(keepingCapacity: false)
+        activePids.removeAll(keepingCapacity: false)
+    }
+
     func sample(activePids: Set<pid_t>) -> [pid_t: DiskProcessSample] {
         var result: [pid_t: DiskProcessSample] = [:]
         let now = CFAbsoluteTimeGetCurrent()

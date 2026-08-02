@@ -2,15 +2,15 @@
 
 Native macOS menu bar resource monitor for CPU, RAM, temperature, disk, external disk, network totals, and per-application activity.
 
-[Download the latest DMG](https://github.com/klovinad/MacResourceBar/releases/download/v1.0/MacResourceBar-1.0.dmg)
+[Download the latest DMG](https://github.com/klovinad/MacResourceBar/releases/download/v1.1/MacResourceBar-1.1.dmg)
 
-![MacResourceBar screenshot](Docs/macresourcebar-dashboard-2026-06-19.png)
+![MacResourceBar screenshot](Docs/macresourcebar-dashboard-2026-08-02.png)
 
 MacResourceBar lives in your menu bar and opens a compact resource dashboard when you click it. It is built for quickly spotting what is using CPU, memory, disk, and network without opening Activity Monitor.
 
 ## Install
 
-1. Download [`MacResourceBar-1.0.dmg`](https://github.com/klovinad/MacResourceBar/releases/download/v1.0/MacResourceBar-1.0.dmg).
+1. Download [`MacResourceBar-1.1.dmg`](https://github.com/klovinad/MacResourceBar/releases/download/v1.1/MacResourceBar-1.1.dmg).
 2. Open the DMG.
 3. Drag `MacResourceBar.app` into `Applications`.
 4. Launch it from `Applications`.
@@ -97,7 +97,7 @@ To build a Release app bundle and compressed DMG:
 ./script/package_dmg.sh
 ```
 
-The script writes `Release/MacResourceBar-1.0.dmg` and a copied app bundle at `Release/MacResourceBar.app`. Public internet distribution will still need Developer ID signing and notarization to avoid Gatekeeper warnings.
+The script writes `Release/MacResourceBar-1.1.dmg` and a copied app bundle at `Release/MacResourceBar.app`. Public internet distribution will still need Developer ID signing and notarization to avoid Gatekeeper warnings.
 
 ## Project Structure
 

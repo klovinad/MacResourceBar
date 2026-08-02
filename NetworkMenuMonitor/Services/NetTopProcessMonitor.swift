@@ -16,35 +16,50 @@ final class NetworkProcessMonitor: @unchecked Sendable {
     var onStatusChange: ((String?) -> Void)?
 
     private let queue = DispatchQueue(label: "NetworkMenuMonitor.NetworkProcessMonitor")
+    private let ioQueue = DispatchQueue(
+        label: "NetworkMenuMonitor.NetworkProcessMonitor.IO",
+        qos: .utility,
+        attributes: .concurrent
+    )
+    private let queueKey = DispatchSpecificKey<UInt8>()
+    private var timer: DispatchSourceTimer?
     private var process: Process?
-    private var stdoutHandle: FileHandle?
-    private var buffer = Data()
-    private var currentBatch: [pid_t: NetworkProcessSample] = [:]
-    private var didPrimeDeltaStream = false
+    private var previousSnapshot: CumulativeSnapshot?
     private var pollingInterval: TimeInterval = 1
+    private var isRunning = false
+    private var lifecycleGeneration: UInt64 = 0
+    private var lastPublishedStatus: String?
+    private var hasPublishedStatus = false
+
+    init() {
+        queue.setSpecific(key: queueKey, value: 1)
+    }
 
     deinit {
-        stopLocked()
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            stopLocked()
+        } else {
+            queue.sync {
+                stopLocked()
+            }
+        }
     }
 
     func start() {
-        let owner = Unmanaged.passUnretained(self)
-        queue.async {
-            owner.takeUnretainedValue().startLocked()
+        queue.async { [weak self] in
+            self?.startLocked()
         }
     }
 
     func stop() {
-        let owner = Unmanaged.passUnretained(self)
-        queue.async {
-            owner.takeUnretainedValue().stopLocked()
+        queue.async { [weak self] in
+            self?.stopLocked()
         }
     }
 
     func restart() {
-        let owner = Unmanaged.passUnretained(self)
-        queue.async {
-            let monitor = owner.takeUnretainedValue()
+        queue.async { [weak self] in
+            guard let monitor = self else { return }
             monitor.stopLocked()
             monitor.startLocked()
         }
@@ -52,161 +67,310 @@ final class NetworkProcessMonitor: @unchecked Sendable {
 
     func setPollingInterval(_ interval: TimeInterval) {
         let normalizedInterval = max(interval, 1)
-        let owner = Unmanaged.passUnretained(self)
-        queue.async {
-            let monitor = owner.takeUnretainedValue()
+        queue.async { [weak self] in
+            guard let monitor = self else { return }
             guard abs(normalizedInterval - monitor.pollingInterval) > 0.01 else { return }
             monitor.pollingInterval = normalizedInterval
-            if monitor.process != nil {
-                monitor.stopLocked()
-                monitor.startLocked()
+            if monitor.isRunning {
+                let nextDelay = monitor.previousSnapshot == nil
+                    ? min(normalizedInterval, 1)
+                    : normalizedInterval
+                monitor.scheduleTimerLocked(deadline: .now() + nextDelay)
             }
         }
     }
 
     private func startLocked() {
-        guard process == nil else { return }
+        guard !isRunning else { return }
+
+        isRunning = true
+        lifecycleGeneration &+= 1
+        previousSnapshot = nil
+        publishStatus(nil)
+        scheduleTimerLocked(deadline: .now())
+    }
+
+    private func stopLocked() {
+        isRunning = false
+        lifecycleGeneration &+= 1
+        timer?.cancel()
+        timer = nil
+        previousSnapshot = nil
+
+        if let process {
+            process.terminationHandler = nil
+            if process.isRunning {
+                process.terminate()
+            }
+        }
+        self.process = nil
+        publishStatus(nil)
+    }
+
+    private func scheduleTimerLocked(deadline: DispatchTime) {
+        timer?.cancel()
+
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        let leewayMilliseconds = Int(
+            min(max(pollingInterval * 100, 100), 1_000)
+        )
+        timer.schedule(
+            deadline: deadline,
+            repeating: pollingInterval,
+            leeway: .milliseconds(leewayMilliseconds)
+        )
+        timer.setEventHandler { [weak self] in
+            self?.captureSnapshotLocked()
+        }
+        timer.resume()
+        self.timer = timer
+    }
+
+    private func captureSnapshotLocked() {
+        guard isRunning, process == nil else { return }
 
         let pipe = Pipe()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/nettop")
-        process.arguments = ["-P", "-L", "0", "-d", "-x", "-n", "-s", "\(Int(pollingInterval.rounded()))"]
+        process.arguments = [
+            "-P",
+            "-L", "1",
+            "-x",
+            "-n",
+            "-c",
+            "-t", "external",
+            "-J", "bytes_in,bytes_out"
+        ]
         process.standardOutput = pipe
         process.standardError = pipe
-        let owner = Unmanaged.passUnretained(self)
-        let queue = self.queue
-        process.terminationHandler = { [queue] terminated in
-            queue.async {
-                let monitor = owner.takeUnretainedValue()
-                monitor.process = nil
-                monitor.stdoutHandle = nil
-                if terminated.terminationStatus != 0 {
-                    monitor.publishStatus("Per-app monitoring is unavailable because nettop exited with status \(terminated.terminationStatus).")
-                }
-            }
-        }
 
         do {
             try process.run()
-            stdoutHandle = pipe.fileHandleForReading
             self.process = process
-            publishStatus(nil)
-            installReader(on: pipe.fileHandleForReading)
         } catch {
             publishStatus("Per-app monitoring is unavailable because nettop could not be started: \(error.localizedDescription)")
+            return
         }
-    }
 
-    private func stopLocked() {
-        stdoutHandle?.readabilityHandler = nil
-        stdoutHandle = nil
-        buffer.removeAll(keepingCapacity: false)
-        currentBatch.removeAll(keepingCapacity: false)
-        didPrimeDeltaStream = false
-        publishStatus(nil)
+        let generation = lifecycleGeneration
+        let outputHandle = pipe.fileHandleForReading
+        let stateQueue = queue
 
-        if let process, process.isRunning {
-            process.terminationHandler = nil
-            process.terminate()
+        ioQueue.async { [weak self, process, outputHandle, stateQueue] in
+            let data = outputHandle.readDataToEndOfFile()
             process.waitUntilExit()
-        }
-        self.process = nil
-    }
+            let terminationStatus = process.terminationStatus
 
-    private func installReader(on handle: FileHandle) {
-        let owner = Unmanaged.passUnretained(self)
-        let queue = self.queue
-        handle.readabilityHandler = { readableHandle in
-            let data = readableHandle.availableData
-            guard !data.isEmpty else { return }
-            queue.async {
-                owner.takeUnretainedValue().consume(data: data)
+            stateQueue.async { [weak self, process] in
+                self?.finishSnapshotLocked(
+                    process: process,
+                    data: data,
+                    terminationStatus: terminationStatus,
+                    generation: generation
+                )
             }
         }
     }
 
-    private func consume(data: Data) {
-        buffer.append(data)
+    private func finishSnapshotLocked(
+        process finishedProcess: Process,
+        data: Data,
+        terminationStatus: Int32,
+        generation: UInt64
+    ) {
+        guard
+            generation == lifecycleGeneration,
+            process === finishedProcess
+        else {
+            return
+        }
 
-        while let newlineIndex = buffer.firstIndex(of: 0x0A) {
-            let lineData = buffer.prefix(upTo: newlineIndex)
-            buffer.removeSubrange(...newlineIndex)
+        process = nil
+        guard isRunning else { return }
 
-            guard let line = String(data: lineData, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-                  !line.isEmpty else {
+        guard terminationStatus == 0 else {
+            publishStatus("Per-app monitoring is unavailable because nettop exited with status \(terminationStatus).")
+            return
+        }
+
+        let now = CFAbsoluteTimeGetCurrent()
+        let counters = parseCumulativeCounters(from: data)
+        let currentSnapshot = CumulativeSnapshot(
+            timestamp: now,
+            countersByPID: counters
+        )
+
+        let isInitialSnapshot = previousSnapshot == nil
+        let rates = rateSamples(
+            previous: previousSnapshot,
+            current: currentSnapshot
+        )
+        previousSnapshot = currentSnapshot
+        publishStatus(nil)
+        resolveMetadataAndPublish(rates, generation: generation)
+        if isInitialSnapshot, pollingInterval > 1 {
+            // A cumulative first snapshot has no rate. Do one quick follow-up
+            // so Eco mode does not leave Network empty for ten seconds.
+            scheduleTimerLocked(deadline: .now() + 1)
+        }
+    }
+
+    private func parseCumulativeCounters(from data: Data) -> [pid_t: CumulativeProcessCounters] {
+        guard let output = String(data: data, encoding: .utf8) else { return [:] }
+
+        var countersByPID: [pid_t: CumulativeProcessCounters] = [:]
+
+        for rawLine in output.split(whereSeparator: \.isNewline) {
+            var columns = rawLine
+                .split(separator: ",", omittingEmptySubsequences: false)
+                .map(String.init)
+
+            while columns.last?.isEmpty == true {
+                columns.removeLast()
+            }
+
+            guard columns.count >= 3 else { continue }
+            guard
+                let bytesOut = UInt64(columns.removeLast()),
+                let bytesIn = UInt64(columns.removeLast())
+            else {
                 continue
             }
 
-            handle(line: line)
+            let processToken = columns.joined(separator: ",")
+            guard let pid = Self.extractPID(from: processToken) else { continue }
+
+            if let existing = countersByPID[pid] {
+                countersByPID[pid] = CumulativeProcessCounters(
+                    processToken: existing.processToken,
+                    bytesIn: Self.saturatedSum(existing.bytesIn, bytesIn),
+                    bytesOut: Self.saturatedSum(existing.bytesOut, bytesOut)
+                )
+            } else {
+                countersByPID[pid] = CumulativeProcessCounters(
+                    processToken: processToken,
+                    bytesIn: bytesIn,
+                    bytesOut: bytesOut
+                )
+            }
         }
+
+        return countersByPID
     }
 
-    private func handle(line: String) {
-        if line.hasPrefix("time,,interface,state,bytes_in,bytes_out") {
-            flushCurrentBatchIfNeeded()
-            currentBatch.removeAll(keepingCapacity: true)
-            return
+    private func rateSamples(
+        previous: CumulativeSnapshot?,
+        current: CumulativeSnapshot
+    ) -> [RawRateSample] {
+        guard
+            let previous,
+            current.timestamp > previous.timestamp
+        else {
+            return []
         }
 
-        let columns = line.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
-        guard columns.count >= 6 else {
-            return
-        }
+        let elapsed = current.timestamp - previous.timestamp
+        var samples: [RawRateSample] = []
 
-        let processToken = columns[1]
-        let sampleDuration = max(pollingInterval.rounded(), 1)
-        let download = max((Double(columns[4]) ?? 0) / sampleDuration, 0)
-        let upload = max((Double(columns[5]) ?? 0) / sampleDuration, 0)
+        for (pid, currentCounters) in current.countersByPID {
+            guard
+                let previousCounters = previous.countersByPID[pid],
+                previousCounters.processToken == currentCounters.processToken
+            else {
+                continue
+            }
 
-        guard download > 0 || upload > 0 else {
-            return
-        }
+            let download = currentCounters.bytesIn >= previousCounters.bytesIn
+                ? Double(currentCounters.bytesIn - previousCounters.bytesIn) / elapsed
+                : 0
+            let upload = currentCounters.bytesOut >= previousCounters.bytesOut
+                ? Double(currentCounters.bytesOut - previousCounters.bytesOut) / elapsed
+                : 0
+            guard download > 0 || upload > 0 else { continue }
 
-        let metadata = AppMetadata(processToken: processToken)
-        guard let pid = metadata.pid else { return }
-
-        if let current = currentBatch[pid] {
-            currentBatch[pid] = NetworkProcessSample(
+            samples.append(RawRateSample(
                 pid: pid,
-                processName: current.processName,
-                bundleIdentifier: current.bundleIdentifier,
-                icon: current.icon,
-                downloadBytesPerSecond: current.downloadBytesPerSecond + download,
-                uploadBytesPerSecond: current.uploadBytesPerSecond + upload
-            )
-        } else {
-            currentBatch[pid] = NetworkProcessSample(
-                pid: pid,
-                processName: metadata.displayName,
-                bundleIdentifier: metadata.bundleIdentifier,
-                icon: metadata.icon,
+                processToken: currentCounters.processToken,
                 downloadBytesPerSecond: download,
                 uploadBytesPerSecond: upload
-            )
+            ))
+        }
+
+        return samples.sorted { $0.pid < $1.pid }
+    }
+
+    private func resolveMetadataAndPublish(_ rates: [RawRateSample], generation: UInt64) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+
+            let samples = rates.compactMap { rate -> NetworkProcessSample? in
+                let metadata = AppMetadata(processToken: rate.processToken)
+                guard metadata.pid == rate.pid else { return nil }
+
+                return NetworkProcessSample(
+                    pid: rate.pid,
+                    processName: metadata.displayName,
+                    bundleIdentifier: metadata.bundleIdentifier,
+                    icon: metadata.icon,
+                    downloadBytesPerSecond: rate.downloadBytesPerSecond,
+                    uploadBytesPerSecond: rate.uploadBytesPerSecond
+                )
+            }
+
+            self.queue.async { [weak self] in
+                guard
+                    let self,
+                    self.isRunning,
+                    self.lifecycleGeneration == generation
+                else {
+                    return
+                }
+
+                let onUpdate = self.onUpdate
+                onUpdate?(samples)
+            }
         }
     }
 
-    private func flushCurrentBatchIfNeeded() {
-        guard !currentBatch.isEmpty else { return }
+    private static func extractPID(from token: String) -> pid_t? {
+        guard let separator = token.lastIndex(of: ".") else { return nil }
+        let pidCandidate = token[token.index(after: separator)...]
+        guard let value = Int32(pidCandidate) else { return nil }
+        return pid_t(value)
+    }
 
-        // Nettop reports cumulative counters in the first frame; ignore baseline.
-        guard didPrimeDeltaStream else {
-            didPrimeDeltaStream = true
-            return
-        }
-
-        let snapshots = Array(currentBatch.values)
-
-        DispatchQueue.main.async { [onUpdate] in
-            onUpdate?(snapshots)
-        }
+    private static func saturatedSum(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
+        let (sum, overflow) = lhs.addingReportingOverflow(rhs)
+        return overflow ? .max : sum
     }
 
     private func publishStatus(_ message: String?) {
-        DispatchQueue.main.async { [onStatusChange] in
+        guard !hasPublishedStatus || lastPublishedStatus != message else { return }
+        hasPublishedStatus = true
+        lastPublishedStatus = message
+
+        let onStatusChange = onStatusChange
+        DispatchQueue.main.async {
             onStatusChange?(message)
         }
+    }
+
+    private struct CumulativeProcessCounters {
+        let processToken: String
+        let bytesIn: UInt64
+        let bytesOut: UInt64
+    }
+
+    private struct CumulativeSnapshot {
+        let timestamp: CFAbsoluteTime
+        let countersByPID: [pid_t: CumulativeProcessCounters]
+    }
+
+    private struct RawRateSample {
+        let pid: pid_t
+        let processToken: String
+        let downloadBytesPerSecond: Double
+        let uploadBytesPerSecond: Double
     }
 }
 

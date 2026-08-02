@@ -18,13 +18,19 @@ struct AppResourceSnapshot: Identifiable, Equatable {
 
     var id: String {
         if let pid {
-            return "\(pid)"
+            return "pid-\(pid)"
         }
-        return bundleIdentifier.flatMap { "bundle-\($0)" } ?? processName
+        return "group-\(processName.lowercased())|\(bundleIdentifier ?? "")"
     }
 
     var canTerminate: Bool {
         !pids.isEmpty
+    }
+
+    var orderKey: String {
+        let baseKey = "name-\(processName.lowercased())|bundle-\(bundleIdentifier ?? "")"
+        guard let pid else { return baseKey }
+        return "\(baseKey)|pid-\(pid)"
     }
 
     var displayName: String {
@@ -72,17 +78,8 @@ struct AppResourceSnapshot: Identifiable, Equatable {
             return "Safari"
         }
 
-        if normalized.localizedCaseInsensitiveContains("Electron Helper") {
-            return normalized
-                .replacingOccurrences(of: " Helper", with: "", options: .caseInsensitive)
-                .replacingOccurrences(of: "Electron", with: "", options: .caseInsensitive)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .nilIfEmpty
-        }
-
-        if normalized.localizedCaseInsensitiveContains(" Helper") {
-            return normalized
-                .replacingOccurrences(of: " Helper", with: "", options: .caseInsensitive)
+        if let helperRange = normalized.range(of: " Helper", options: .caseInsensitive) {
+            return String(normalized[..<helperRange.lowerBound])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .nilIfEmpty
         }

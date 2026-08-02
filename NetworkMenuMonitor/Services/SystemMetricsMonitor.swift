@@ -63,6 +63,11 @@ final class SystemMetricsMonitor: @unchecked Sendable {
     private var previousDiskCounters: [String: DiskCounters] = [:]
     private var pollingInterval: TimeInterval = 1
     private var didResolveDiskNames = false
+    private var lastDiskResolutionTime: CFAbsoluteTime = 0
+    private let diskResolutionInterval: CFTimeInterval = 60
+    private var cachedCPUTemperature: Double?
+    private var lastTemperaturePollTime: CFAbsoluteTime = 0
+    private let temperaturePollingInterval: CFTimeInterval = 5
 
     private struct ExternalDiskInfo {
         let displayName: String
@@ -72,12 +77,23 @@ final class SystemMetricsMonitor: @unchecked Sendable {
     private var cachedExternalDiskInfo: [String: ExternalDiskInfo] = [:]
     private var lastKnownDiskSet: Set<String> = []
     private var previousExternalDiskCounters: [String: DiskCounters] = [:]
+    private var cachedExternalDiskListEntries: [[String: Any]] = []
 
     func start() {
+        queue.async { [weak self] in
+            self?.startLocked()
+        }
+    }
+
+    private func startLocked() {
         guard timer == nil else { return }
 
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now(), repeating: pollingInterval)
+        timer.schedule(
+            deadline: .now(),
+            repeating: pollingInterval,
+            leeway: .milliseconds(Int(min(max(pollingInterval * 100, 100), 1_000)))
+        )
         timer.setEventHandler { [weak self] in
             self?.poll()
         }
@@ -94,6 +110,12 @@ final class SystemMetricsMonitor: @unchecked Sendable {
     }
 
     func stop() {
+        queue.async { [weak self] in
+            self?.stopLocked()
+        }
+    }
+
+    private func stopLocked() {
         timer?.cancel()
         timer = nil
         // Preserve CPU baseline across mode switches so the next sample is useful.
@@ -101,28 +123,37 @@ final class SystemMetricsMonitor: @unchecked Sendable {
 
     func setPollingInterval(_ interval: TimeInterval) {
         let normalizedInterval = max(interval, 1)
-        guard abs(normalizedInterval - pollingInterval) > 0.01 else { return }
-        pollingInterval = normalizedInterval
+        queue.async { [weak self] in
+            guard let self else { return }
+            guard abs(normalizedInterval - self.pollingInterval) > 0.01 else { return }
+            self.pollingInterval = normalizedInterval
 
-        if timer != nil {
-            stop()
-            start()
+            if self.timer != nil {
+                self.stopLocked()
+                self.startLocked()
+            }
         }
     }
 
     private func poll() {
-        if !didResolveDiskNames || previousDiskCounters.isEmpty {
+        let now = CFAbsoluteTimeGetCurrent()
+        if !didResolveDiskNames || now - lastDiskResolutionTime >= diskResolutionInterval {
             diskNames = resolveTrackedDiskNames()
             didResolveDiskNames = true
+            lastDiskResolutionTime = now
         }
 
         let externalActivities = readExternalDiskActivities()
+        if lastTemperaturePollTime == 0 || now - lastTemperaturePollTime >= temperaturePollingInterval {
+            cachedCPUTemperature = readCPUTemperature()
+            lastTemperaturePollTime = now
+        }
 
         let sample = SystemMetricsSample(
             cpuUsagePercent: readCPUUsage(),
             memoryUsagePercent: readMemoryUsage(),
             diskActivityMBPerSecond: readDiskActivity(),
-            cpuTemperatureCelsius: readCPUTemperature()
+            cpuTemperatureCelsius: cachedCPUTemperature
         )
 
         Task { @MainActor in
@@ -154,16 +185,36 @@ final class SystemMetricsMonitor: @unchecked Sendable {
             return 0
         }
 
-        var totalTicksUsed: UInt32 = 0
-        var totalTicks: UInt32 = 0
+        guard previousCPUInfoCount == cpuInfoCount else {
+            let previousSize = vm_size_t(previousCPUInfoCount) * vm_size_t(MemoryLayout<integer_t>.stride)
+            vm_deallocate(mach_task_self_, vm_address_t(bitPattern: previousCPUInfo), previousSize)
+            self.previousCPUInfo = cpuInfo
+            self.previousCPUInfoCount = cpuInfoCount
+            return 0
+        }
+
+        var totalTicksUsed: UInt64 = 0
+        var totalTicks: UInt64 = 0
 
         for cpu in 0 ..< Int(cpuCount) {
             let offset = CPUState.max * cpu
 
-            let user = UInt32(cpuInfo[offset + CPUState.user] - previousCPUInfo[offset + CPUState.user])
-            let system = UInt32(cpuInfo[offset + CPUState.system] - previousCPUInfo[offset + CPUState.system])
-            let nice = UInt32(cpuInfo[offset + CPUState.nice] - previousCPUInfo[offset + CPUState.nice])
-            let idle = UInt32(cpuInfo[offset + CPUState.idle] - previousCPUInfo[offset + CPUState.idle])
+            let user = tickDelta(
+                current: cpuInfo[offset + CPUState.user],
+                previous: previousCPUInfo[offset + CPUState.user]
+            )
+            let system = tickDelta(
+                current: cpuInfo[offset + CPUState.system],
+                previous: previousCPUInfo[offset + CPUState.system]
+            )
+            let nice = tickDelta(
+                current: cpuInfo[offset + CPUState.nice],
+                previous: previousCPUInfo[offset + CPUState.nice]
+            )
+            let idle = tickDelta(
+                current: cpuInfo[offset + CPUState.idle],
+                previous: previousCPUInfo[offset + CPUState.idle]
+            )
 
             totalTicksUsed += user + system + nice
             totalTicks += user + system + nice + idle
@@ -177,6 +228,12 @@ final class SystemMetricsMonitor: @unchecked Sendable {
 
         guard totalTicks > 0 else { return 0 }
         return min(max((Double(totalTicksUsed) / Double(totalTicks)) * 100, 0), 100)
+    }
+
+    private func tickDelta(current: integer_t, previous: integer_t) -> UInt64 {
+        let currentBits = UInt32(bitPattern: current)
+        let previousBits = UInt32(bitPattern: previous)
+        return UInt64(currentBits &- previousBits)
     }
 
     private func readMemoryUsage() -> Double {
@@ -234,6 +291,8 @@ final class SystemMetricsMonitor: @unchecked Sendable {
 
     private func detectExternalDisks(among names: [String]) -> [String: ExternalDiskInfo] {
         var result: [String: ExternalDiskInfo] = [:]
+        let volumeNamesByDisk = externalVolumeNamesByWholeDisk()
+
         for name in names {
             guard let media = serviceForBSDName(name) else { continue }
             defer { IOObjectRelease(media) }
@@ -264,10 +323,10 @@ final class SystemMetricsMonitor: @unchecked Sendable {
             let product = deviceChars["Product Name"] as? String,
             !product.trimmingCharacters(in: .whitespaces).isEmpty {
                 productName = product.trimmingCharacters(in: .whitespaces)
-                displayName = productName
+                displayName = volumeNamesByDisk[name] ?? productName
             } else {
                 productName = ""
-                displayName = name
+                displayName = volumeNamesByDisk[name] ?? name
             }
 
             let isMemoryCard = interconnect.localizedCaseInsensitiveContains("SD") ||
@@ -295,12 +354,21 @@ final class SystemMetricsMonitor: @unchecked Sendable {
             guard let counters = diskCounters(for: bsdName, timestamp: now) else { continue }
             freshCounters[bsdName] = counters
 
-            guard let prev = previousExternalDiskCounters[bsdName] else { continue }
-            let elapsed = counters.timestamp - prev.timestamp
-            guard elapsed > 0 else { continue }
-
-            let readRate = counters.readBytes >= prev.readBytes ? Double(counters.readBytes - prev.readBytes) / elapsed : 0
-            let writeRate = counters.writeBytes >= prev.writeBytes ? Double(counters.writeBytes - prev.writeBytes) / elapsed : 0
+            let readRate: Double
+            let writeRate: Double
+            if let prev = previousExternalDiskCounters[bsdName] {
+                let elapsed = counters.timestamp - prev.timestamp
+                if elapsed > 0 {
+                    readRate = counters.readBytes >= prev.readBytes ? Double(counters.readBytes - prev.readBytes) / elapsed : 0
+                    writeRate = counters.writeBytes >= prev.writeBytes ? Double(counters.writeBytes - prev.writeBytes) / elapsed : 0
+                } else {
+                    readRate = 0
+                    writeRate = 0
+                }
+            } else {
+                readRate = 0
+                writeRate = 0
+            }
 
             activities.append(ExternalDiskActivity(
                 bsdName: bsdName,
@@ -398,14 +466,77 @@ final class SystemMetricsMonitor: @unchecked Sendable {
     }
 
     private func resolveTrackedDiskNames() -> [String] {
+        cachedExternalDiskListEntries = fetchExternalDiskListEntries()
+
         let mountedIdentifiers = mountedDiskIdentifiers()
-        var resolved = Set<String>()
+        var resolved = Set(externalPhysicalDiskIdentifiers())
 
         for identifier in mountedIdentifiers {
             resolved.formUnion(physicalDiskIdentifiers(for: identifier))
         }
 
         return resolved.sorted()
+    }
+
+    private func fetchExternalDiskListEntries() -> [[String: Any]] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
+        process.arguments = ["list", "-plist", "external", "physical"]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return []
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard
+            let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+            let dictionary = plist as? [String: Any],
+            let disks = dictionary["AllDisksAndPartitions"] as? [[String: Any]]
+        else {
+            return []
+        }
+
+        return disks
+    }
+
+    private func externalPhysicalDiskIdentifiers() -> [String] {
+        cachedExternalDiskListEntries
+            .compactMap { $0["DeviceIdentifier"] as? String }
+            .map(wholeDiskIdentifier(from:))
+    }
+
+    private func externalVolumeNamesByWholeDisk() -> [String: String] {
+        var namesByDisk: [String: String] = [:]
+        for disk in cachedExternalDiskListEntries {
+            guard let identifier = disk["DeviceIdentifier"] as? String else { continue }
+            let wholeDisk = wholeDiskIdentifier(from: identifier)
+            guard let partitions = disk["Partitions"] as? [[String: Any]] else { continue }
+
+            if let name = partitions.compactMap(volumeName(from:)).first {
+                namesByDisk[wholeDisk] = name
+            }
+        }
+
+        return namesByDisk
+    }
+
+    private func volumeName(from partition: [String: Any]) -> String? {
+        guard
+            let name = partition["VolumeName"] as? String,
+            !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            name.localizedCaseInsensitiveCompare("EFI") != .orderedSame
+        else {
+            return nil
+        }
+
+        return name.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func mountedDiskIdentifiers() -> [String] {
@@ -479,10 +610,10 @@ final class SystemMetricsMonitor: @unchecked Sendable {
     }
 
     private func wholeDiskIdentifier(from identifier: String) -> String {
-        identifier.replacingOccurrences(
-            of: #"s\d+$"#,
-            with: "",
-            options: .regularExpression
-        )
+        var result = identifier
+        while let range = result.range(of: #"s\d+$"#, options: .regularExpression) {
+            result.removeSubrange(range)
+        }
+        return result
     }
 }

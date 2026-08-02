@@ -18,7 +18,11 @@ final class AppResourceMonitor: @unchecked Sendable {
     private var latestCPU: [pid_t: Double] = [:]
     private var latestMemory: [pid_t: UInt64] = [:]
     private var latestDisk: [pid_t: DiskProcessSample] = [:]
+    private var latestProcessMetadataByPid: [pid_t: ProcessMetadata] = [:]
     private var isRunning = false
+    private var completedSampleCount = 0
+    private var cachedRunningApplicationMetadata: [pid_t: ProcessMetadata] = [:]
+    private var runningApplicationObservers: [NSObjectProtocol] = []
 
     init() {
         networkMonitor.onUpdate = { [weak self] samples in
@@ -34,19 +38,52 @@ final class AppResourceMonitor: @unchecked Sendable {
             guard let monitor = self else { return }
             monitor.publishStatus(message)
         }
+
+        observeRunningApplicationChanges()
+    }
+
+    deinit {
+        let center = NSWorkspace.shared.notificationCenter
+        runningApplicationObservers.forEach(center.removeObserver)
+    }
+
+    private func observeRunningApplicationChanges() {
+        let center = NSWorkspace.shared.notificationCenter
+        let refresh: @Sendable (Notification) -> Void = { [weak self] _ in
+            guard let self else { return }
+            let metadata = Self.readRunningApplicationMetadataByPid()
+            self.queue.async { [self] in
+                self.cachedRunningApplicationMetadata = metadata
+            }
+        }
+
+        runningApplicationObservers = [
+            center.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main, using: refresh),
+            center.addObserver(forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main, using: refresh)
+        ]
+
+        if Thread.isMainThread {
+            cachedRunningApplicationMetadata = Self.readRunningApplicationMetadataByPid()
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                let metadata = Self.readRunningApplicationMetadataByPid()
+                self.queue.async { [self] in
+                    self.cachedRunningApplicationMetadata = metadata
+                }
+            }
+        }
     }
 
     func start() {
-        let owner = Unmanaged.passUnretained(self)
-        queue.async {
-            owner.takeUnretainedValue().startLocked()
+        queue.async { [weak self] in
+            self?.startLocked()
         }
     }
 
     func stop() {
-        let owner = Unmanaged.passUnretained(self)
-        queue.async {
-            owner.takeUnretainedValue().stopLocked()
+        queue.async { [weak self] in
+            self?.stopLocked()
         }
     }
 
@@ -63,7 +100,10 @@ final class AppResourceMonitor: @unchecked Sendable {
             self.networkMonitor.setPollingInterval(normalizedInterval)
             if self.timer != nil {
                 self.timer?.cancel()
-                self.scheduleTimer(deadline: .now() + normalizedInterval)
+                let nextDelay = self.completedSampleCount < 2
+                    ? min(normalizedInterval, 1)
+                    : normalizedInterval
+                self.scheduleTimer(deadline: .now() + nextDelay)
             }
         }
     }
@@ -72,22 +112,32 @@ final class AppResourceMonitor: @unchecked Sendable {
         guard !isRunning else { return }
 
         isRunning = true
+        completedSampleCount = 0
         publishStatus(nil)
         networkMonitor.setPollingInterval(pollingInterval)
         networkMonitor.start()
-        scheduleTimer(deadline: .now())
+        // Prime cumulative CPU/disk counters immediately, then take a usable
+        // second sample after one second even in the 10-second refresh mode.
+        tick()
+        scheduleTimer(deadline: .now() + min(pollingInterval, 1))
     }
 
     private func stopLocked() {
         timer?.cancel()
         timer = nil
         isRunning = false
+        completedSampleCount = 0
         latestNetwork.removeAll(keepingCapacity: false)
         latestCPU.removeAll(keepingCapacity: false)
         latestMemory.removeAll(keepingCapacity: false)
         latestDisk.removeAll(keepingCapacity: false)
+        latestProcessMetadataByPid.removeAll(keepingCapacity: false)
+        cpuMonitor.reset()
+        diskMonitor.reset()
         networkMonitor.stop()
-        publishUpdate([])
+        // Keep the last published snapshot while the popover is closed. Clearing
+        // it made every reopen flash an incorrect empty table before the first
+        // fresh sample arrived.
     }
 
     private func scheduleTimer(deadline: DispatchTime) {
@@ -101,13 +151,30 @@ final class AppResourceMonitor: @unchecked Sendable {
     }
 
     private func tick() {
-        let metadataByPid = runningApplicationMetadataByPid()
-        let activePids = allProcessIdentifiers()
+        let metadataByPid = Self.metadataIncludingDescendants(
+            of: cachedRunningApplicationMetadata
+        )
+        latestProcessMetadataByPid = metadataByPid
+        // Include descendants so renderer/helper CPU, memory and disk activity
+        // does not disappear simply because it has no current network traffic.
+        // Unrelated daemons remain out of scope.
+        let activePids = Set(metadataByPid.keys).union(latestNetwork.keys)
 
+        // The second, one-second sample is intentionally an early warm-up so
+        // other apps do not all show 0% for ten seconds. Do not attribute the
+        // cost of creating and laying out this popover to MacResourceBar's
+        // first visible CPU value; establish its baseline at this point and
+        // report the representative interval that follows.
+        if completedSampleCount == 1 {
+            cpuMonitor.reset(pid: getpid())
+        }
         latestCPU = cpuMonitor.sample(activePids: activePids)
         latestMemory = memoryMonitor.sample(activePids: activePids)
         latestDisk = diskMonitor.sample(activePids: activePids)
-        publishUpdate(collectSnapshots(metadataByPid: metadataByPid))
+        completedSampleCount += 1
+        if completedSampleCount >= 2 {
+            publishUpdate(collectSnapshots(metadataByPid: metadataByPid))
+        }
     }
 
     private func publishUpdate(_ snapshots: [AppResourceSnapshot]) {
@@ -119,8 +186,12 @@ final class AppResourceMonitor: @unchecked Sendable {
     }
 
     private func publishIfNeeded() {
-        guard isRunning else { return }
-        publishUpdate(collectSnapshots(metadataByPid: runningApplicationMetadataByPid()))
+        guard isRunning, completedSampleCount >= 2 else { return }
+        publishUpdate(collectSnapshots(
+            metadataByPid: latestProcessMetadataByPid.isEmpty
+                ? cachedRunningApplicationMetadata
+                : latestProcessMetadataByPid
+        ))
     }
 
     private func collectSnapshots(metadataByPid: [pid_t: ProcessMetadata]) -> [AppResourceSnapshot] {
@@ -159,38 +230,6 @@ final class AppResourceMonitor: @unchecked Sendable {
         return result
     }
 
-    private func runningApplicationMetadataByPid() -> [pid_t: ProcessMetadata] {
-        let snapshot: [pid_t: ProcessMetadata]
-        if Thread.isMainThread {
-            snapshot = Self.readRunningApplicationMetadataByPid()
-        } else {
-            snapshot = DispatchQueue.main.sync {
-                Self.readRunningApplicationMetadataByPid()
-            }
-        }
-
-        return snapshot
-    }
-
-    private func allProcessIdentifiers() -> Set<pid_t> {
-        let capacity = max(proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0), 0)
-        guard capacity > 0 else { return [] }
-
-        let pidCount = (Int(capacity) / MemoryLayout<pid_t>.stride) * 2
-        var pids = Array(repeating: pid_t(0), count: pidCount)
-        let bytesWritten = pids.withUnsafeMutableBufferPointer { buffer in
-            proc_listpids(
-                UInt32(PROC_ALL_PIDS),
-                0,
-                buffer.baseAddress,
-                Int32(buffer.count * MemoryLayout<pid_t>.stride)
-            )
-        }
-
-        guard bytesWritten > 0 else { return [] }
-        return Set(pids.prefix(Int(bytesWritten) / MemoryLayout<pid_t>.stride).filter { $0 > 0 })
-    }
-
     private static func readRunningApplicationMetadataByPid() -> [pid_t: ProcessMetadata] {
         var metadataByPid: [pid_t: ProcessMetadata] = [:]
 
@@ -206,6 +245,82 @@ final class AppResourceMonitor: @unchecked Sendable {
         }
 
         return metadataByPid
+    }
+
+    private static func metadataIncludingDescendants(
+        of rootMetadata: [pid_t: ProcessMetadata]
+    ) -> [pid_t: ProcessMetadata] {
+        guard !rootMetadata.isEmpty else { return [:] }
+
+        let rootPids = Set(rootMetadata.keys)
+        let parentByPid = processParentMap()
+        var result = rootMetadata
+
+        for pid in parentByPid.keys where !rootPids.contains(pid) {
+            var cursor = pid
+            var visited: Set<pid_t> = [pid]
+            var owningRoot: pid_t?
+
+            while let parent = parentByPid[cursor], parent > 0 {
+                if rootPids.contains(parent) {
+                    owningRoot = parent
+                    break
+                }
+                guard visited.insert(parent).inserted else { break }
+                cursor = parent
+            }
+
+            guard
+                let owningRoot,
+                let owner = rootMetadata[owningRoot],
+                let displayName = processName(for: pid) ?? executableName(for: pid)
+            else {
+                continue
+            }
+
+            result[pid] = ProcessMetadata(
+                displayName: displayName,
+                bundleIdentifier: owner.bundleIdentifier,
+                icon: owner.icon
+            )
+        }
+
+        return result
+    }
+
+    private static func processParentMap() -> [pid_t: pid_t] {
+        let estimatedCount = max(proc_listallpids(nil, 0), 0)
+        guard estimatedCount > 0 else { return [:] }
+
+        var pids = [pid_t](
+            repeating: 0,
+            count: Int(estimatedCount) + 64
+        )
+        let count = pids.withUnsafeMutableBufferPointer { buffer in
+            proc_listallpids(
+                buffer.baseAddress,
+                Int32(buffer.count * MemoryLayout<pid_t>.stride)
+            )
+        }
+        guard count > 0 else { return [:] }
+
+        var result: [pid_t: pid_t] = [:]
+        for pid in pids.prefix(Int(count)) where pid > 0 {
+            var info = proc_bsdinfo()
+            let expectedSize = Int32(MemoryLayout<proc_bsdinfo>.stride)
+            let readSize = withUnsafeMutablePointer(to: &info) { pointer in
+                proc_pidinfo(
+                    pid,
+                    PROC_PIDTBSDINFO,
+                    0,
+                    pointer,
+                    expectedSize
+                )
+            }
+            guard readSize == expectedSize else { continue }
+            result[pid] = pid_t(info.pbi_ppid)
+        }
+        return result
     }
 
     private func metadata(
@@ -224,7 +339,7 @@ final class AppResourceMonitor: @unchecked Sendable {
             )
         }
 
-        if let processName = processName(for: pid) ?? executableName(for: pid) {
+        if let processName = Self.processName(for: pid) ?? Self.executableName(for: pid) {
             return ProcessMetadata(
                 displayName: processName,
                 bundleIdentifier: nil,
@@ -235,7 +350,7 @@ final class AppResourceMonitor: @unchecked Sendable {
         return nil
     }
 
-    private func processName(for pid: pid_t) -> String? {
+    private static func processName(for pid: pid_t) -> String? {
         var nameBuffer = [CChar](repeating: 0, count: Int(MAXCOMLEN) + 1)
         let result = proc_name(pid, &nameBuffer, UInt32(nameBuffer.count))
         guard result > 0 else { return nil }
@@ -245,7 +360,7 @@ final class AppResourceMonitor: @unchecked Sendable {
             .nilIfEmpty
     }
 
-    private func executableName(for pid: pid_t) -> String? {
+    private static func executableName(for pid: pid_t) -> String? {
         var pathBuffer = [CChar](repeating: 0, count: 4096)
         let result = proc_pidpath(pid, &pathBuffer, UInt32(pathBuffer.count))
         guard result > 0 else { return nil }
