@@ -1,0 +1,53 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  universal-release:
+    runs-on: macos-15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate packaging script
+        run: |
+          bash -n script/package_dmg.sh script/build_and_run.sh
+          swiftc -typecheck script/launch_app.swift
+          swiftc -typecheck script/measure_overhead.swift
+
+      - name: Test monitors, filters, preferences and formatting
+        run: swift test
+
+      - name: Build universal Release app
+        run: |
+          xcodebuild \
+            -project NetworkMenuMonitor.xcodeproj \
+            -scheme NetworkMenuMonitor \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath build-ci \
+            ARCHS='arm64 x86_64' \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Verify bundle metadata and architectures
+        run: |
+          app='build-ci/Build/Products/Release/MacResourceBar.app'
+          executable="$app/Contents/MacOS/MacResourceBar"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = '1.2'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" = '4'
+          archs="$(lipo -archs "$executable")"
+          [[ "$archs" == *arm64* ]]
+          [[ "$archs" == *x86_64* ]]

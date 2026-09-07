@@ -166,7 +166,7 @@ struct AppSnapshotFilterState {
             // Do not relabel a helper unless its bundle identity proves which
             // parent owns it. Name-only grouping can merge Chrome channels or
             // embedded WebKit processes from unrelated apps.
-            let displayName = resolvedParent?.displayName ?? snapshot.displayName
+            let displayName = snapshot.owningAppName ?? resolvedParent?.displayName ?? snapshot.displayName
             let nameKey = displayName.folding(
                 options: [.caseInsensitive, .diacriticInsensitive],
                 locale: .current
@@ -188,7 +188,9 @@ struct AppSnapshotFilterState {
                     downloadBytesPerSecond: snapshot.downloadBytesPerSecond,
                     uploadBytesPerSecond: snapshot.uploadBytesPerSecond,
                     isApproximation: snapshot.isApproximation,
-                    childProcessCount: snapshot.childProcessCount
+                    childProcessCount: snapshot.childProcessCount,
+                    processIdentities: snapshot.processIdentities,
+                    availableMetrics: snapshot.availableMetrics
                 )
                 continue
             }
@@ -206,7 +208,9 @@ struct AppSnapshotFilterState {
                 downloadBytesPerSecond: current.downloadBytesPerSecond + snapshot.downloadBytesPerSecond,
                 uploadBytesPerSecond: current.uploadBytesPerSecond + snapshot.uploadBytesPerSecond,
                 isApproximation: current.isApproximation || snapshot.isApproximation,
-                childProcessCount: current.childProcessCount + snapshot.childProcessCount
+                childProcessCount: current.childProcessCount + snapshot.childProcessCount,
+                processIdentities: current.processIdentities.merging(snapshot.processIdentities) { existing, _ in existing },
+                availableMetrics: current.availableMetrics.intersection(snapshot.availableMetrics)
             )
         }
 

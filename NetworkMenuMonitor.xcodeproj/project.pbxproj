@@ -27,6 +27,7 @@
 		C00100010000000000000008 /* ResourceHistorySample.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00100010000000000000008 /* ResourceHistorySample.swift */; };
 		C00100010000000000000009 /* MenuBarPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00100010000000000000009 /* MenuBarPreferences.swift */; };
 		C0010001000000000000000A /* AppNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0010001000000000000000A /* AppNotifications.swift */; };
+		C0010001000000000000000B /* MonitoringPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0010001000000000000000B /* MonitoringPolicy.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -52,6 +53,7 @@
 		D00100010000000000000008 /* ResourceHistorySample.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourceHistorySample.swift; sourceTree = "<group>"; };
 		D00100010000000000000009 /* MenuBarPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarPreferences.swift; sourceTree = "<group>"; };
 		D0010001000000000000000A /* AppNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppNotifications.swift; sourceTree = "<group>"; };
+		D0010001000000000000000B /* MonitoringPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonitoringPolicy.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -126,6 +128,7 @@
 			children = (
 				D0010001000000000000000A /* AppNotifications.swift */,
 				A00100010000000000000016 /* ByteRateFormatter.swift */,
+				D0010001000000000000000B /* MonitoringPolicy.swift */,
 			);
 			path = Utilities;
 			sourceTree = "<group>";
@@ -235,6 +238,7 @@
 				C00100010000000000000008 /* ResourceHistorySample.swift in Sources */,
 				C00100010000000000000009 /* MenuBarPreferences.swift in Sources */,
 				C0010001000000000000000A /* AppNotifications.swift in Sources */,
+				C0010001000000000000000B /* MonitoringPolicy.swift in Sources */,
 			A00100010000000000000001 /* NetworkMenuMonitorApp.swift in Sources */,
 			A00100010000000000000005 /* NetworkTotalsMonitor.swift in Sources */,
 		);
@@ -250,7 +254,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 4;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -261,7 +265,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.klovinad.MacResourceBar;
 				PRODUCT_NAME = MacResourceBar;
 				SDKROOT = macosx;
@@ -278,7 +282,7 @@
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 4;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -289,7 +293,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.klovinad.MacResourceBar;
 				PRODUCT_NAME = MacResourceBar;
 				SDKROOT = macosx;

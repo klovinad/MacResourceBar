@@ -17,63 +17,67 @@ struct DiskProcessSample {
 
 final class DiskProcessMonitor {
     private var previousRUsageByPid: [pid_t: DiskSamplePoint] = [:]
-    private var activePids: Set<pid_t> = []
+    private let readUsage: (pid_t) -> DiskUsage?
+    private let clock: () -> TimeInterval
+
+    init(
+        readUsage: @escaping (pid_t) -> DiskUsage? = DiskProcessMonitor.readUsage,
+        clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    ) {
+        self.readUsage = readUsage
+        self.clock = clock
+    }
 
     func reset() {
         previousRUsageByPid.removeAll(keepingCapacity: false)
-        activePids.removeAll(keepingCapacity: false)
     }
 
-    func sample(activePids: Set<pid_t>) -> [pid_t: DiskProcessSample] {
+    func sample(activePids: Set<pid_t>, maximumAge: TimeInterval = 15) -> [pid_t: DiskProcessSample] {
         var result: [pid_t: DiskProcessSample] = [:]
-        let now = CFAbsoluteTimeGetCurrent()
-        self.activePids = activePids
+        let now = clock()
+        var nextBaselines: [pid_t: DiskSamplePoint] = [:]
 
         for pid in activePids {
-            guard let usage = readUsage(for: pid) else { continue }
+            guard let usage = readUsage(pid) else { continue }
             let totalRead = usage.readBytes
             let totalWrite = usage.writeBytes
 
-            if let previous = previousRUsageByPid[pid], now > previous.timestamp {
+            if let previous = previousRUsageByPid[pid], previous.startTime == usage.startTime {
                 let elapsed = now - previous.timestamp
-                if elapsed > 0 {
-                    let deltaRead = totalRead >= previous.totalRead
-                        ? Double(totalRead - previous.totalRead)
-                        : 0
-                    let deltaWrite = totalWrite >= previous.totalWrite
-                        ? Double(totalWrite - previous.totalWrite)
-                        : 0
-
+                if let readRate = CounterRatePolicy.rate(current: totalRead, previous: previous.totalRead, elapsed: elapsed, maximumAge: maximumAge),
+                   let writeRate = CounterRatePolicy.rate(current: totalWrite, previous: previous.totalWrite, elapsed: elapsed, maximumAge: maximumAge) {
                     result[pid] = DiskProcessSample(
                         pid: pid,
-                        readBytesPerSecond: deltaRead / elapsed,
-                        writeBytesPerSecond: deltaWrite / elapsed
+                        readBytesPerSecond: readRate,
+                        writeBytesPerSecond: writeRate
                     )
                 }
             }
 
-            previousRUsageByPid[pid] = DiskSamplePoint(
+            nextBaselines[pid] = DiskSamplePoint(
                 totalRead: totalRead,
                 totalWrite: totalWrite,
-                timestamp: now
+                timestamp: now,
+                startTime: usage.startTime
             )
         }
 
-        previousRUsageByPid = previousRUsageByPid.filter { activePids.contains($0.key) }
+        previousRUsageByPid = nextBaselines
         return result
     }
 
-    private func readUsage(for pid: pid_t) -> DiskUsage? {
-        var usage = rusage_info_current()
+    static func readUsage(for pid: pid_t) -> DiskUsage? {
+        var usage = rusage_info_v4()
 
         let result = withUnsafeMutablePointer(to: &usage) { pointer in
-            procPIDRUsage(pid, RUSAGE_INFO_CURRENT, UnsafeMutableRawPointer(pointer))
+            procPIDRUsage(pid, RUSAGE_INFO_V4, UnsafeMutableRawPointer(pointer))
         }
         guard result == 0 else { return nil }
 
         return DiskUsage(
             readBytes: usage.ri_diskio_bytesread,
-            writeBytes: usage.ri_diskio_byteswritten
+            writeBytes: usage.ri_diskio_byteswritten,
+            startTime: usage.ri_proc_start_abstime
         )
     }
 
@@ -81,10 +85,12 @@ final class DiskProcessMonitor {
         let totalRead: UInt64
         let totalWrite: UInt64
         let timestamp: CFAbsoluteTime
+        let startTime: UInt64
     }
 
-    private struct DiskUsage {
+    struct DiskUsage {
         let readBytes: UInt64
         let writeBytes: UInt64
+        let startTime: UInt64
     }
 }

@@ -1,9 +1,10 @@
 import AppKit
 import Combine
+import OSLog
 import SwiftUI
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDelegate {
     private enum Constants {
         static let popoverSizeExpanded = NSSize(width: 860, height: 620)
         static let popoverSizeCompact = NSSize(width: 860, height: 620)
@@ -11,7 +12,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         static let statusItemHorizontalPadding: CGFloat = 8
         static let miniStatusItemHorizontalPadding: CGFloat = 4
         static let statusItemClipAllowance: CGFloat = 3
-        static let minimumPopoverDimension: CGFloat = 28
+        static let minimumPopoverWidth: CGFloat = 648
+        static let minimumPopoverHeight: CGFloat = 420
         static let popoverScreenMargin: CGFloat = 8
         static let fallbackStatusTitle = "…"
         static let miniStatusLabelValueGap: CGFloat = 4
@@ -19,6 +21,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     let viewModel = MenuBarViewModel()
+    private lazy var popoverUpdates = PopoverUpdateRelay(viewModel: viewModel)
+    private let responsivenessLog = Logger(subsystem: "com.klovinad.MacResourceBar", category: "Responsiveness")
     private let popover = NSPopover()
     private let statusMenu = NSMenu()
     private var statusItem: NSStatusItem?
@@ -46,6 +50,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         bindViewModel()
         observeSettingsRequests()
         ensureStatusItem()
+        if CommandLine.arguments.contains("--show-popover") {
+            showPopover()
+        }
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -103,14 +110,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func popoverDidClose(_ notification: Notification) {
+        responsivenessLog.info("Popover closed")
         removePopoverDismissEventMonitor()
         pinnedPopoverMinX = nil
         pinnedPopoverTopY = nil
         viewModel.setPopoverVisible(false)
-        // A hidden NSHostingController still observes every @Published metric
-        // and lays out the full process table. Detach it so a closed menu-bar
-        // app is genuinely idle; a fresh controller is cheap to create on open.
-        popover.contentViewController = nil
+        // Keep the laid-out panel for fast reopening. Its relay suppresses
+        // model invalidations while hidden, so the table does no idle work.
+        popoverUpdates.isActive = false
         updateStatusItemTitle()
         clearStatusItemHighlight()
         DispatchQueue.main.async { [weak self] in
@@ -351,11 +358,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         showStatusMenu(for: event, in: button)
     }
 
-    private func showStatusMenu(for event: NSEvent) {
-        guard let button = statusItem?.button else { return }
-        showStatusMenu(for: event, in: button)
-    }
-
     private func showStatusMenuFromStatusItem() {
         guard let button = statusItem?.button else { return }
         if popover.isShown {
@@ -437,6 +439,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
 
         if let settingsWindow {
+            viewModel.setSettingsVisible(true)
             settingsWindow.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -445,19 +448,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let controller = NSHostingController(rootView: SettingsView(viewModel: viewModel))
         let window = NSWindow(contentViewController: controller)
         window.title = "MacResourceBar Settings"
-        window.styleMask = [.titled, .closable, .miniaturizable]
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.isReleasedWhenClosed = false
+        window.delegate = self
         window.setContentSize(NSSize(width: 520, height: 560))
+        window.minSize = NSSize(width: 500, height: 520)
         window.center()
         settingsWindow = window
+        viewModel.setSettingsVisible(true)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === settingsWindow else { return }
+        viewModel.setSettingsVisible(false)
+        settingsWindow?.contentViewController = nil
+        settingsWindow = nil
+    }
+
+    func windowDidMiniaturize(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === settingsWindow else { return }
+        viewModel.setSettingsVisible(false)
+    }
+
+    func windowDidDeminiaturize(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === settingsWindow else { return }
+        viewModel.setSettingsVisible(true)
+    }
+
     private func showPopover() {
+        guard !popover.isShown else { return }
+        let started = ProcessInfo.processInfo.systemUptime
+        let reused = popover.contentViewController != nil
+        defer {
+            let milliseconds = (ProcessInfo.processInfo.systemUptime - started) * 1000
+            responsivenessLog.info("Popover layout: \(milliseconds, privacy: .public) ms; reused: \(reused, privacy: .public)")
+        }
         ensureStatusItem()
         guard let button = statusItem?.button else { return }
 
+        popoverUpdates.isActive = true
         attachPopoverContentIfNeeded()
         updatePopoverSize()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -476,6 +507,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         viewModel.setPopoverVisible(true)
+        // A selected status item is drawn on the system highlight pill. Use
+        // the matching semantic menu-item foreground while that pill is
+        // visible instead of inheriting the lower-alpha label color.
+        updateStatusItemTitle(force: true)
         clearStatusItemHighlight()
         DispatchQueue.main.async { [weak self] in
             self?.clearStatusItemHighlight()
@@ -485,7 +520,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func attachPopoverContentIfNeeded() {
         guard popover.contentViewController == nil else { return }
         popover.contentViewController = NSHostingController(
-            rootView: MenuBarPopoverView(viewModel: viewModel)
+            rootView: MenuBarPopoverView(viewModel: viewModel, updates: popoverUpdates)
         )
     }
 
@@ -494,8 +529,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let maxWidth = (screenFrame?.width ?? Constants.popoverSizeCompact.width) - (Constants.popoverScreenMargin * 2)
         let maxHeight = (screenFrame?.height ?? Constants.popoverSizeCompact.height) - (Constants.popoverScreenMargin * 2)
         popover.contentSize = NSSize(
-            width: min(Constants.popoverSizeCompact.width, max(Constants.minimumPopoverDimension, maxWidth)),
-            height: min(Constants.popoverSizeCompact.height, max(Constants.minimumPopoverDimension, maxHeight))
+            width: min(
+                maxWidth,
+                max(Constants.minimumPopoverWidth, min(Constants.popoverSizeCompact.width, maxWidth))
+            ),
+            height: min(
+                maxHeight,
+                max(Constants.minimumPopoverHeight, min(Constants.popoverSizeCompact.height, maxHeight))
+            )
         )
     }
 
@@ -509,11 +550,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         guard let item = statusItem, let button = item.button else { return }
 
         let preferredStyle = viewModel.menuBarLabelStyle
-        let presentation = statusItemPresentation(preferredStyle: preferredStyle)
+        let basePresentation = statusItemPresentation(preferredStyle: preferredStyle)
+        let usesSelectedForeground = popover.isShown
+        let presentation: StatusItemPresentation
+        if usesSelectedForeground {
+            let title = NSMutableAttributedString(attributedString: basePresentation.title)
+            title.addAttribute(
+                .foregroundColor,
+                value: NSColor.selectedMenuItemTextColor,
+                range: NSRange(location: 0, length: title.length)
+            )
+            presentation = StatusItemPresentation(
+                effectiveStyle: basePresentation.effectiveStyle,
+                title: title,
+                length: basePresentation.length
+            )
+        } else {
+            presentation = basePresentation
+        }
         // Include attributed layout and reserved width, not only visible text.
         // Mini can keep the same characters while its tab stops change after a
         // disk is connected, renamed, or reordered.
-        let titleKey = "\(presentation.effectiveStyle.rawValue)|\(presentation.length)|\(presentation.title.hash)|\(presentation.title.string)"
+        let titleKey = "\(usesSelectedForeground)|\(presentation.effectiveStyle.rawValue)|\(presentation.length)|\(presentation.title.hash)|\(presentation.title.string)"
         var lengthChanged = false
 
         if renderedStatusItemKey != titleKey {
@@ -621,10 +679,85 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
         }
 
-        return fallback ?? StatusItemPresentation(
+        if let fallback {
+            return overflowStatusItemPresentation(
+                from: viewModel.menuBarDisplaySlots(for: fallback.effectiveStyle),
+                style: fallback.effectiveStyle,
+                maximumLength: maximumLength
+            )
+        }
+
+        return StatusItemPresentation(
             effectiveStyle: .mini,
             title: NSAttributedString(string: Constants.fallbackStatusTitle),
-            length: Constants.minimumStatusItemLength
+            length: min(Constants.minimumStatusItemLength, maximumLength)
+        )
+    }
+
+    private func overflowStatusItemPresentation(
+        from slots: [MenuBarViewModel.MenuBarDisplaySlot],
+        style: MenuBarViewModel.MenuBarLabelStyle,
+        maximumLength: CGFloat
+    ) -> StatusItemPresentation {
+        guard !slots.isEmpty else {
+            return StatusItemPresentation(
+                effectiveStyle: style,
+                title: NSAttributedString(string: Constants.fallbackStatusTitle),
+                length: min(Constants.minimumStatusItemLength, maximumLength)
+            )
+        }
+
+        for visibleCount in stride(from: slots.count - 1, through: 0, by: -1) {
+            let hiddenCount = slots.count - visibleCount
+            var candidateSlots = Array(slots.prefix(visibleCount))
+            if hiddenCount > 0 {
+                candidateSlots.append(MenuBarViewModel.MenuBarDisplaySlot(
+                    id: "overflow-count",
+                    text: "+\(hiddenCount)",
+                    widthTemplate: "+99"
+                ))
+            }
+
+            let title: NSAttributedString
+            let contentWidth: CGFloat
+            if style == .mini, let miniLayout = miniStatusItemTitle(slots: candidateSlots) {
+                title = miniLayout.title
+                contentWidth = miniLayout.width
+            } else {
+                let separator = viewModel.menuBarComponentSeparator(for: style)
+                title = statusItemTitle(
+                    components: candidateSlots.map {
+                        stableStatusItemComponent(text: $0.text, widthTemplate: $0.widthTemplate)
+                    },
+                    separator: separator,
+                    style: style
+                )
+                let template = statusItemTitle(
+                    components: candidateSlots.map(\.widthTemplate),
+                    separator: separator,
+                    style: style
+                )
+                contentWidth = max(title.size().width, template.size().width)
+            }
+
+            let length = ceil(contentWidth)
+                + (style == .mini
+                    ? Constants.miniStatusItemHorizontalPadding
+                    : Constants.statusItemHorizontalPadding)
+                + Constants.statusItemClipAllowance
+            if length <= maximumLength {
+                return StatusItemPresentation(
+                    effectiveStyle: style,
+                    title: title,
+                    length: max(min(length, maximumLength), Constants.minimumStatusItemLength)
+                )
+            }
+        }
+
+        return StatusItemPresentation(
+            effectiveStyle: style,
+            title: NSAttributedString(string: Constants.fallbackStatusTitle),
+            length: min(Constants.minimumStatusItemLength, maximumLength)
         )
     }
 
@@ -677,9 +810,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let width: CGFloat
     }
 
-    /// Mini keeps its total width stable while distributing the unused value
-    /// reserve evenly between groups. This keeps every visible label/value gap
-    /// and every visible value/next-label gap consistent at the same time.
+    /// Mini keeps a fixed label/value gap and a fixed-width value field for
+    /// every slot. Changing digits cannot move any following metric.
     private func miniStatusItemTitle(
         slots: [MenuBarViewModel.MenuBarDisplaySlot]
     ) -> MiniStatusItemLayout? {
@@ -714,14 +846,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         guard measuredSlots.count == slots.count, !measuredSlots.isEmpty else { return nil }
 
-        let unusedValueWidth = measuredSlots.reduce(CGFloat.zero) { result, slot in
-            result + (slot.reservedValueWidth - slot.valueWidth)
-        }
         let groupCount = measuredSlots.count - 1
-        let resolvedGroupGap = groupCount > 0
-            ? Constants.miniStatusMinimumGroupGap
-                + (unusedValueWidth / CGFloat(groupCount))
-            : Constants.miniStatusMinimumGroupGap
         let reservedWidth = measuredSlots.reduce(CGFloat.zero) { result, slot in
             result
                 + slot.labelWidth
@@ -743,7 +868,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             currentX = valueStart + slot.valueWidth
 
             if index < measuredSlots.count - 1 {
-                let nextLabelStart = currentX + resolvedGroupGap
+                let unusedValueWidth = slot.reservedValueWidth - slot.valueWidth
+                let nextLabelStart = currentX
+                    + unusedValueWidth
+                    + Constants.miniStatusMinimumGroupGap
                 tabStops.append(NSTextTab(textAlignment: .left, location: nextLabelStart))
                 title += "\t"
                 currentX = nextLabelStart

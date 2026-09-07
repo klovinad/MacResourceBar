@@ -1,11 +1,14 @@
 .DS_Store
+.build/
 .venv_pdf/
 .claude/
 Release/
 DerivedData/
 build/
+build-debug/
 build-release/
 *.xcworkspace/xcuserdata/
 *.xcuserdatad/
 *.xcuserstate
 *.swp
+build-ci/
