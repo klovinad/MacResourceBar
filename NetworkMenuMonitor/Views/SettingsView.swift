@@ -114,7 +114,7 @@ struct SettingsView: View {
     private var menuBarSettings: some View {
         Form {
             Section("Menu Bar Appearance") {
-                Picker("Labels", selection: Binding(
+                Picker("Style", selection: Binding(
                     get: { viewModel.menuBarLabelStyle },
                     set: { viewModel.setMenuBarLabelStyle($0) }
                 )) {
@@ -123,20 +123,30 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .onMoveCommand(perform: viewModel.moveMenuBarLabelStyle)
 
                 Text(viewModel.menuBarLabelStyle.helpText)
                     .font(.caption)
                     .foregroundStyle(.primary.opacity(0.75))
 
-                ScrollView(.horizontal, showsIndicators: false) {
-                    Text(viewModel.menuBarTitle)
-                        .font(.caption.monospacedDigit().weight(.medium))
+                ScrollView(.horizontal, showsIndicators: true) {
+                    if let style = viewModel.menuBarLabelStyle.graphicStyle {
+                        Image(nsImage: MenuBarGraphicRenderer.image(for: MenuBarGraphicRenderer.layout(
+                            entries: viewModel.menuBarGraphicEntries(for: viewModel.menuBarLabelStyle), style: style
+                        )))
+                        .renderingMode(.template)
                         .foregroundStyle(.primary)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .padding(.vertical, 2)
+                        .padding(.vertical, 6)
+                    } else {
+                        Text(viewModel.menuBarTitle)
+                            .font(.caption.monospacedDigit().weight(.medium))
+                            .foregroundStyle(.primary)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .padding(.vertical, 6)
+                    }
                 }
                 .accessibilityLabel("Menu bar preview")
-                .accessibilityValue(viewModel.menuBarTitle)
+                .accessibilityValue(viewModel.menuBarAccessibilityComponents.joined(separator: ", "))
             }
 
             Section("Menu Bar Metrics") {

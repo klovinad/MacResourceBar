@@ -43,3 +43,17 @@ Local receipts, timing logs, measurements and rollback files live under the igno
 ## Public release gate
 
 **The source and local development package are checked; the public installer remains on hold.** The local app and DMG use ad-hoc signing. Follow [RELEASE.md](../RELEASE.md) to supply Developer ID Application signing, notarize and staple the app and DMG, and pass Gatekeeper assessment before publishing a binary release.
+
+## Tray layouts — 1.2 (5), 2026-09-08
+
+Two lines and Icons are available from the popover header and Menu Bar settings. Two lines fills columns from top to bottom, preserving the selected metric order and keeping network directions together. Icons uses a single row. Both share measured layout code with the settings preview, keep unavailable values explicit, and reserve value widths so neighbouring metrics stay in place.
+
+- `swift test`: **29 tests passed**, including stable columns across zero/three-digit/unavailable values, odd metric counts, network-pair overflow, both styles across preference reload, and mouse forwarding to the native status button.
+- Debug and universal Release builds passed; the local DMG passed signature, architecture and image verification. The installed build at `/Applications/MacResourceBar.app` and its running executable match the release receipt.
+- Both layouts were inspected in the actual macOS menu bar. Native checks confirmed selection from the popover, matching selection and preview in Settings, return to Full, visible keyboard focus, and the Two lines selection after relaunch. The final local selection is Two lines.
+- A drawing layer uses the status button's semantic foreground colour to keep small values readable. The native cell retains a corresponding image; mouse gestures route to its original action, and the native accessibility label/value still describes all metrics.
+- Synthetic desktop clicks and arrow-key selection were inconsistent during concurrent desktop interaction; they are **not** accepted as manual mouse/keyboard verification. A person should confirm opening/closing from the menu bar, the context menu and arrow-key selection on their desktop. Actual light-menu-bar appearance and Retina/Intel hardware were not exercised in this follow-up.
+
+A 30.7-second read-only run after a fresh launch, with Two lines and 10-second refresh, measured **0.61% combined CPU** on the one-core scale and a median **23.5 MiB** footprint. All 30 visibility samples confirmed a closed panel. This is a local observation under concurrent media transfers, not a comparison with the earlier open-panel history state. The measured white glyph interior on the current blue menu-bar background had a **6.84:1** contrast ratio.
+
+The latest local receipts, screenshots and rollback bundles are under ignored `Release/qa/2026-09-07-tray/`. This remains an ad-hoc development package; the public signing and notarization gate above is unchanged.

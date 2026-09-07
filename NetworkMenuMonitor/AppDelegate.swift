@@ -30,6 +30,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private var renderedStatusItemToolTip: String?
     private var renderedStatusItemAccessibilityValue: String?
     private var appliedStatusItemLength: CGFloat?
+    private var statusGraphicView: MenuBarGraphicView?
+    private var cachedGraphicPresentation: (
+        style: MenuBarViewModel.MenuBarLabelStyle,
+        entries: [MenuBarGraphicEntry],
+        maximumWidth: CGFloat,
+        presentation: StatusItemPresentation
+    )?
     private var menuBarTitleObserver: AnyCancellable?
     private var trayOrderingObserver: AnyCancellable?
     private var settingsObserver: NSObjectProtocol?
@@ -544,6 +551,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         let effectiveStyle: MenuBarViewModel.MenuBarLabelStyle
         let title: NSAttributedString
         let length: CGFloat
+        var graphicLayout: MenuBarGraphicRenderer.Layout? = nil
+        var graphicImage: NSImage? = nil
+        var hiddenCount = 0
     }
 
     private func updateStatusItemTitle(force: Bool = false) {
@@ -553,7 +563,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         let basePresentation = statusItemPresentation(preferredStyle: preferredStyle)
         let usesSelectedForeground = popover.isShown
         let presentation: StatusItemPresentation
-        if usesSelectedForeground {
+        if usesSelectedForeground, basePresentation.graphicLayout == nil {
             let title = NSMutableAttributedString(attributedString: basePresentation.title)
             title.addAttribute(
                 .foregroundColor,
@@ -585,6 +595,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             lengthChanged = true
         }
 
+        if let layout = presentation.graphicLayout {
+            // A real cell image keeps AppKit's status-item tracking area alive
+            // when the title is empty. The overlay supplies readable contrast.
+            if button.image !== presentation.graphicImage {
+                button.image = presentation.graphicImage
+            }
+            button.imagePosition = .imageOnly
+            button.imageScaling = .scaleNone
+            if statusGraphicView?.superview !== button {
+                statusGraphicView?.removeFromSuperview()
+                let drawing = MenuBarGraphicView(frame: button.bounds)
+                button.addSubview(drawing)
+                statusGraphicView = drawing
+            }
+            statusGraphicView?.isHidden = false
+            statusGraphicView?.apply(layout)
+        } else {
+            button.image = nil
+            button.imagePosition = .noImage
+            statusGraphicView?.isHidden = true
+        }
+
         let accessibilityValue = viewModel.menuBarAccessibilityComponents.joined(separator: ", ")
         if renderedStatusItemAccessibilityValue != accessibilityValue {
             button.setAccessibilityValue(accessibilityValue)
@@ -599,6 +631,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             toolTipLines.append(
                 "\(preferredStyle.label) automatically shown as \(presentation.effectiveStyle.label) to fit"
             )
+        }
+        if presentation.hiddenCount > 0 {
+            toolTipLines.append("\(presentation.hiddenCount) more values in the panel")
         }
         let toolTip = toolTipLines.joined(separator: "\n")
         if renderedStatusItemToolTip != toolTip {
@@ -616,6 +651,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private func statusItemPresentation(
         preferredStyle: MenuBarViewModel.MenuBarLabelStyle
     ) -> StatusItemPresentation {
+        if let graphicStyle = preferredStyle.graphicStyle {
+            let entries = viewModel.menuBarGraphicEntries(for: preferredStyle)
+            let maximumWidth = maximumStatusItemLength() - 4
+            if let cached = cachedGraphicPresentation, cached.style == preferredStyle,
+               cached.entries == entries, cached.maximumWidth == maximumWidth {
+                return cached.presentation
+            }
+            let layout = MenuBarGraphicRenderer.layout(entries: entries, style: graphicStyle, maximumWidth: maximumWidth)
+            let presentation = StatusItemPresentation(
+                effectiveStyle: preferredStyle, title: NSAttributedString(string: ""),
+                length: max(Constants.minimumStatusItemLength, layout.size.width + 4),
+                graphicLayout: layout, graphicImage: MenuBarGraphicRenderer.image(for: layout),
+                hiddenCount: layout.hiddenCount
+            )
+            cachedGraphicPresentation = (preferredStyle, entries, maximumWidth, presentation)
+            return presentation
+        }
         let candidateStyles: [MenuBarViewModel.MenuBarLabelStyle]
         switch preferredStyle {
         case .full:
@@ -624,6 +676,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             candidateStyles = [.compact, .mini]
         case .mini:
             candidateStyles = [.mini]
+        case .twoLines, .icons:
+            candidateStyles = []
         }
 
         let maximumLength = maximumStatusItemLength()
@@ -926,7 +980,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
         case .compact:
             NSFont.monospacedSystemFont(ofSize: 11.5, weight: .medium)
-        case .mini:
+        case .mini, .twoLines, .icons:
             NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
         }
     }

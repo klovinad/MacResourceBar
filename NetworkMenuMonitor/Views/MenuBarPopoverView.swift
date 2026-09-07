@@ -273,12 +273,13 @@ struct MenuBarPopoverView: View {
                     Text(style.label).tag(style)
                 }
             }
-            .pickerStyle(.segmented)
+            .pickerStyle(.menu)
             .labelsHidden()
             .controlSize(.small)
-            .frame(width: 180)
-            .help("Menu bar labels: Full, Compact or Mini")
+            .frame(width: 132)
+            .help("Menu bar style: Two lines, Icons, Full, Compact or Mini")
             .accessibilityLabel("Menu bar style")
+            .onMoveCommand(perform: viewModel.moveMenuBarLabelStyle)
 
             Picker("Refresh rate", selection: Binding(
                 get: { viewModel.highRefreshEnabled },
