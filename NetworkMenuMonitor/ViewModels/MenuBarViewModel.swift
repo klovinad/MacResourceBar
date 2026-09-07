@@ -122,6 +122,7 @@ final class MenuBarViewModel: ObservableObject {
         let id: String
         let text: String
         let widthTemplate: String
+        var pairID: String? = nil
     }
 
     @Published private(set) var totalDownloadBytesPerSecond: Double = 0
@@ -581,8 +582,12 @@ final class MenuBarViewModel: ObservableObject {
                                    widthTemplate: "\($0.label) \($0.widthTemplate)")
             }
         }
-        let slots = orderedVisibleTrayMetrics.flatMap {
-            trayDisplaySlots(for: $0, style: style)
+        let slots = orderedVisibleTrayMetrics.flatMap { metric in
+            trayDisplaySlots(for: metric, style: style).map { slot in
+                var result = slot
+                result.pairID = metric == .network ? "network" : nil
+                return result
+            }
         }
         guard slots.isEmpty else { return slots }
 
@@ -1254,7 +1259,7 @@ final class MenuBarViewModel: ObservableObject {
         switch metric {
         case .network:
             guard networkTotalsLastUpdatedAt != nil else {
-                return ["Network unavailable"]
+                return [style == .full ? "Network N/A" : "NET N/A"]
             }
             switch style {
             case .full:

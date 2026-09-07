@@ -15,7 +15,7 @@ MacResourceBar lives in your menu bar and opens a compact resource dashboard whe
 3. Drag `MacResourceBar.app` into `Applications`.
 4. Launch it from `Applications`.
 
-The source tree targets **1.2 (build 5)**. The download link above points to the latest published version. Locally built DMGs are development artifacts; public DMGs require Developer ID signing and Apple notarization. See [the release process](RELEASE.md).
+The source tree targets **1.2 (build 6)**. The download link above points to the latest published version. Locally built DMGs are development artifacts; public DMGs require Developer ID signing and Apple notarization. See [the release process](RELEASE.md).
 
 ## Features
 
@@ -29,6 +29,7 @@ The source tree targets **1.2 (build 5)**. The download link above points to the
 - Left click opens the popover.
 - Two lines / Icons / Full / Compact / Mini can be selected directly in the popover header or Settings. The choice is saved between launches.
 - Two lines stacks adjacent metrics in fixed-width columns and keeps network download/upload together. Icons uses a single row with larger values and SF Symbols. Both preserve metric order, disk identity and unavailable states.
+- Full keeps descriptive labels; Compact uses shorter labels and rates. A narrow menu bar preserves the selected style and shows `+N` for values available in the panel, keeping network directions together.
 - The 1 / 10 second refresh control remains directly in the popover header.
 - Right click opens the context menu with launch-at-login, high refresh, show/hide, settings, and quit.
 - High refresh samples system totals and per-app CPU, memory, and disk activity every second. Per-app network snapshots run every 5 seconds after a short warm-up.

@@ -57,3 +57,14 @@ Two lines and Icons are available from the popover header and Menu Bar settings.
 A 30.7-second read-only run after a fresh launch, with Two lines and 10-second refresh, measured **0.61% combined CPU** on the one-core scale and a median **23.5 MiB** footprint. All 30 visibility samples confirmed a closed panel. This is a local observation under concurrent media transfers, not a comparison with the earlier open-panel history state. The measured white glyph interior on the current blue menu-bar background had a **6.84:1** contrast ratio.
 
 The latest local receipts, screenshots and rollback bundles are under ignored `Release/qa/2026-09-07-tray/`. This remains an ad-hoc development package; the public signing and notarization gate above is unchanged.
+
+## Explicit text styles — 1.2 (6), 2026-09-08
+
+Full and Compact now keep the selected text format when the menu bar is narrow. The previous Full -> Compact -> Mini fallback could make two choices look identical. Overflow retains the selected labels, shows `+N`, and keeps both network directions together; the tooltip and panel retain all selected values. A missing network sample uses the same `N/A` label as its reserved text slot.
+
+- The identical Full/Compact rendering was reproduced on the installed build 5. After installing build 6, the user confirmed that the styles are visibly different.
+- `swift test`: **29 tests passed**. The native-button forwarding test now explicitly creates `NSApplication`, which the macOS 15 CI runner did not create before action dispatch. Its existing click and outside-release assertions are unchanged.
+- Debug and universal Release builds passed. The local DMG passed architecture, signature and image verification. The installed app and running executable passed release-receipt correspondence.
+- CI's bundle-version check was brought forward to build 6. The selected metric order, sampling intervals and the new graphic layouts are unchanged by this follow-up.
+
+Follow-up receipts, screenshots and the previous app bundle are under ignored `Release/qa/2026-09-08-full/`. Public signing/notarization and the manual/hardware checks recorded above remain separate acceptance gates.

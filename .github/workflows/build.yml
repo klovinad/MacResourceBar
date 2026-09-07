@@ -47,7 +47,7 @@ jobs:
           app='build-ci/Build/Products/Release/MacResourceBar.app'
           executable="$app/Contents/MacOS/MacResourceBar"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = '1.2'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" = '4'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" = '6'
           archs="$(lipo -archs "$executable")"
           [[ "$archs" == *arm64* ]]
           [[ "$archs" == *x86_64* ]]

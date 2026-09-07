@@ -573,7 +573,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             presentation = StatusItemPresentation(
                 effectiveStyle: basePresentation.effectiveStyle,
                 title: title,
-                length: basePresentation.length
+                length: basePresentation.length,
+                hiddenCount: basePresentation.hiddenCount
             )
         } else {
             presentation = basePresentation
@@ -627,11 +628,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             viewModel.menuBarAccessibilityComponents.joined(separator: " · "),
             viewModel.highRefreshEnabled ? "Updates every second" : "Updates every 10 seconds"
         ]
-        if presentation.effectiveStyle != preferredStyle {
-            toolTipLines.append(
-                "\(preferredStyle.label) automatically shown as \(presentation.effectiveStyle.label) to fit"
-            )
-        }
         if presentation.hiddenCount > 0 {
             toolTipLines.append("\(presentation.hiddenCount) more values in the panel")
         }
@@ -668,83 +664,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             cachedGraphicPresentation = (preferredStyle, entries, maximumWidth, presentation)
             return presentation
         }
-        let candidateStyles: [MenuBarViewModel.MenuBarLabelStyle]
-        switch preferredStyle {
-        case .full:
-            candidateStyles = [.full, .compact, .mini]
-        case .compact:
-            candidateStyles = [.compact, .mini]
-        case .mini:
-            candidateStyles = [.mini]
-        case .twoLines, .icons:
-            candidateStyles = []
-        }
-
+        // Respect the selected format even when it needs an overflow indicator.
+        // Falling through Full -> Compact -> Mini made different selections
+        // display the same text on narrower menu bars.
+        let style = preferredStyle
         let maximumLength = maximumStatusItemLength()
-        var fallback: StatusItemPresentation?
-
-        for style in candidateStyles {
-            let separator = viewModel.menuBarComponentSeparator(for: style)
-            let slots = viewModel.menuBarDisplaySlots(for: style)
-            guard slots.allSatisfy({ $0.text.count <= $0.widthTemplate.count }) else {
-                continue
-            }
-
-            let title: NSAttributedString
-            let contentWidth: CGFloat
-            if style == .mini, let miniLayout = miniStatusItemTitle(slots: slots) {
-                title = miniLayout.title
-                contentWidth = miniLayout.width
-            } else {
-                title = statusItemTitle(
-                    components: slots.map {
-                        stableStatusItemComponent(
-                            text: $0.text,
-                            widthTemplate: $0.widthTemplate
-                        )
-                    },
-                    separator: separator,
-                    style: style
-                )
-                let template = statusItemTitle(
-                    components: slots.map(\.widthTemplate),
-                    separator: separator,
-                    style: style
-                )
-                contentWidth = max(template.size().width, title.size().width)
-            }
-            let naturalLength = max(
-                Constants.minimumStatusItemLength,
-                ceil(contentWidth)
-                    + (style == .mini
-                        ? Constants.miniStatusItemHorizontalPadding
-                        : Constants.statusItemHorizontalPadding)
-                    + Constants.statusItemClipAllowance
+        let separator = viewModel.menuBarComponentSeparator(for: style)
+        let slots = viewModel.menuBarDisplaySlots(for: style)
+        let title: NSAttributedString
+        let contentWidth: CGFloat
+        if style == .mini, let miniLayout = miniStatusItemTitle(slots: slots) {
+            title = miniLayout.title
+            contentWidth = miniLayout.width
+        } else {
+            title = statusItemTitle(
+                components: slots.map {
+                    stableStatusItemComponent(text: $0.text, widthTemplate: $0.widthTemplate)
+                },
+                separator: separator,
+                style: style
             )
-            let presentation = StatusItemPresentation(
-                effectiveStyle: style,
-                title: title,
-                length: naturalLength
+            let template = statusItemTitle(
+                components: slots.map(\.widthTemplate),
+                separator: separator,
+                style: style
             )
-            fallback = presentation
-
-            if naturalLength <= maximumLength {
-                return presentation
-            }
+            contentWidth = max(template.size().width, title.size().width)
         }
-
-        if let fallback {
-            return overflowStatusItemPresentation(
-                from: viewModel.menuBarDisplaySlots(for: fallback.effectiveStyle),
-                style: fallback.effectiveStyle,
-                maximumLength: maximumLength
+        let naturalLength = max(
+            Constants.minimumStatusItemLength,
+            ceil(contentWidth)
+                + (style == .mini
+                    ? Constants.miniStatusItemHorizontalPadding
+                    : Constants.statusItemHorizontalPadding)
+                + Constants.statusItemClipAllowance
+        )
+        if naturalLength <= maximumLength {
+            return StatusItemPresentation(
+                effectiveStyle: style, title: title, length: naturalLength
             )
         }
-
-        return StatusItemPresentation(
-            effectiveStyle: .mini,
-            title: NSAttributedString(string: Constants.fallbackStatusTitle),
-            length: min(Constants.minimumStatusItemLength, maximumLength)
+        return overflowStatusItemPresentation(
+            from: slots, style: style, maximumLength: maximumLength
         )
     }
 
@@ -762,6 +723,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         }
 
         for visibleCount in stride(from: slots.count - 1, through: 0, by: -1) {
+            // Keep both network directions visible or move both into overflow.
+            if visibleCount > 0, let pairID = slots[visibleCount - 1].pairID,
+               slots[visibleCount].pairID == pairID { continue }
             let hiddenCount = slots.count - visibleCount
             var candidateSlots = Array(slots.prefix(visibleCount))
             if hiddenCount > 0 {
@@ -803,7 +767,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
                 return StatusItemPresentation(
                     effectiveStyle: style,
                     title: title,
-                    length: max(min(length, maximumLength), Constants.minimumStatusItemLength)
+                    length: max(min(length, maximumLength), Constants.minimumStatusItemLength),
+                    hiddenCount: hiddenCount
                 )
             }
         }
@@ -811,7 +776,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         return StatusItemPresentation(
             effectiveStyle: style,
             title: NSAttributedString(string: Constants.fallbackStatusTitle),
-            length: min(Constants.minimumStatusItemLength, maximumLength)
+            length: min(Constants.minimumStatusItemLength, maximumLength),
+            hiddenCount: slots.count
         )
     }
 

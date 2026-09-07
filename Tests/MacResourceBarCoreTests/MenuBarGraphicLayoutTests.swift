@@ -11,6 +11,9 @@ final class MenuBarGraphicLayoutTests: XCTestCase {
 
     @MainActor
     func testGraphicSurfaceForwardsOneInsideClickToTheNativeButton() throws {
+        // NSControl dispatches actions through NSApplication. XCTest does not
+        // create one consistently across macOS releases or test runners.
+        _ = NSApplication.shared
         let target = ClickTarget()
         let button = NSButton(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
         button.target = target

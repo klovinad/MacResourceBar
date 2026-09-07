@@ -1,6 +1,6 @@
 # Release process
 
-MacResourceBar 1.2 (build 4) uses one version source in the Xcode project. The Release build is always produced for both Apple silicon and Intel.
+MacResourceBar 1.2 (build 6) uses one version source in the Xcode project. The Release build is always produced for both Apple silicon and Intel.
 
 ## Local package
 
