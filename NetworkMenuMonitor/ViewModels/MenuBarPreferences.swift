@@ -16,6 +16,7 @@ struct MenuBarPreferences {
         static let externalDiskSelectionMode = "externalDiskSelectionMode"
         static let selectedExternalDisks = "selectedExternalDisks"
         static let customAppOrder = "customAppOrder"
+        static let networkSource = "networkSource"
     }
 
     private let defaults: UserDefaults
@@ -95,6 +96,11 @@ struct MenuBarPreferences {
                 ?? csvValues(forKey: Key.customAppOrder)
         }
         nonmutating set { defaults.set(newValue, forKey: Key.customAppOrder) }
+    }
+
+    var networkSourceRawValue: String? {
+        get { defaults.string(forKey: Key.networkSource) }
+        nonmutating set { defaults.set(newValue, forKey: Key.networkSource) }
     }
 
     private func bool(forKey key: String, defaultValue: Bool) -> Bool {

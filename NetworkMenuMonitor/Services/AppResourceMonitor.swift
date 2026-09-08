@@ -15,6 +15,7 @@ final class AppResourceMonitor: @unchecked Sendable {
     private var timer: DispatchSourceTimer?
     private var pollingInterval: TimeInterval = 1
     private var latestNetwork: [pid_t: NetworkProcessSample] = [:]
+    private var latestNetworkSampleAt: TimeInterval?
     private var latestCPU: [pid_t: Double] = [:]
     private var latestMemory: [pid_t: UInt64] = [:]
     private var latestDisk: [pid_t: DiskProcessSample] = [:]
@@ -28,15 +29,25 @@ final class AppResourceMonitor: @unchecked Sendable {
         networkMonitor.onUpdate = { [weak self] samples in
             guard let monitor = self else { return }
             monitor.queue.async { [monitor] in
+                guard monitor.isRunning else { return }
                 let byPid = Dictionary(uniqueKeysWithValues: samples.map { ($0.pid, $0) })
                 monitor.latestNetwork = byPid
+                monitor.latestNetworkSampleAt = ProcessInfo.processInfo.systemUptime
                 monitor.publishIfNeeded()
             }
         }
 
         networkMonitor.onStatusChange = { [weak self] message in
             guard let monitor = self else { return }
-            monitor.publishStatus(message)
+            monitor.queue.async {
+                guard monitor.isRunning else { return }
+                if message != nil {
+                    monitor.latestNetwork.removeAll(keepingCapacity: true)
+                    monitor.latestNetworkSampleAt = nil
+                    monitor.publishIfNeeded()
+                }
+                monitor.publishStatus(message)
+            }
         }
 
         observeRunningApplicationChanges()
@@ -128,6 +139,7 @@ final class AppResourceMonitor: @unchecked Sendable {
         isRunning = false
         completedSampleCount = 0
         latestNetwork.removeAll(keepingCapacity: false)
+        latestNetworkSampleAt = nil
         latestCPU.removeAll(keepingCapacity: false)
         latestMemory.removeAll(keepingCapacity: false)
         latestDisk.removeAll(keepingCapacity: false)
@@ -160,17 +172,11 @@ final class AppResourceMonitor: @unchecked Sendable {
         // Unrelated daemons remain out of scope.
         let activePids = Set(metadataByPid.keys).union(latestNetwork.keys)
 
-        // The second, one-second sample is intentionally an early warm-up so
-        // other apps do not all show 0% for ten seconds. Do not attribute the
-        // cost of creating and laying out this popover to MacResourceBar's
-        // first visible CPU value; establish its baseline at this point and
-        // report the representative interval that follows.
-        if completedSampleCount == 1 {
-            cpuMonitor.reset(pid: getpid())
-        }
-        latestCPU = cpuMonitor.sample(activePids: activePids)
+        // Apply the same sampling rules to our own process as every other app.
+        let maximumAge = max(8, pollingInterval * 1.5)
+        latestCPU = cpuMonitor.sample(activePids: activePids, maximumAge: maximumAge)
         latestMemory = memoryMonitor.sample(activePids: activePids)
-        latestDisk = diskMonitor.sample(activePids: activePids)
+        latestDisk = diskMonitor.sample(activePids: activePids, maximumAge: maximumAge)
         completedSampleCount += 1
         if completedSampleCount >= 2 {
             publishUpdate(collectSnapshots(metadataByPid: metadataByPid))
@@ -202,13 +208,23 @@ final class AppResourceMonitor: @unchecked Sendable {
             .union(latestDisk.keys)
 
         for pid in allPids {
-            guard let metadata = metadata(for: pid, metadataByPid: metadataByPid) else {
+            guard let identity = ProcessIdentity.capture(for: pid),
+                  let metadata = metadata(for: pid, metadataByPid: metadataByPid) else {
                 continue
             }
             let cpu = latestCPU[pid] ?? 0
             let ram = latestMemory[pid] ?? 0
             let disk = latestDisk[pid]
-            let network = latestNetwork[pid]
+            let network = latestNetwork[pid].flatMap { $0.identity == identity ? $0 : nil }
+            var available: AppResourceSnapshot.Metrics = []
+            if latestCPU[pid] != nil { available.insert(.cpu) }
+            if latestMemory[pid] != nil { available.insert(.memory) }
+            if disk != nil { available.insert(.disk) }
+            if let sampledAt = latestNetworkSampleAt,
+               SamplingFreshnessPolicy.canReuseBaseline(
+                    age: ProcessInfo.processInfo.systemUptime - sampledAt,
+                    regularInterval: max(5, pollingInterval)
+               ) { available.insert(.network) }
 
             result.append(AppResourceSnapshot(
                 processName: metadata.displayName,
@@ -223,7 +239,10 @@ final class AppResourceMonitor: @unchecked Sendable {
                 downloadBytesPerSecond: network?.downloadBytesPerSecond ?? 0,
                 uploadBytesPerSecond: network?.uploadBytesPerSecond ?? 0,
                 isApproximation: network != nil || !latestNetwork.isEmpty,
-                childProcessCount: 1
+                childProcessCount: 1,
+                processIdentities: [pid: identity],
+                availableMetrics: available,
+                owningAppName: metadata.owningAppName
             ))
         }
 
@@ -281,7 +300,8 @@ final class AppResourceMonitor: @unchecked Sendable {
             result[pid] = ProcessMetadata(
                 displayName: displayName,
                 bundleIdentifier: owner.bundleIdentifier,
-                icon: owner.icon
+                icon: owner.icon,
+                owningAppName: owner.owningAppName ?? owner.displayName
             )
         }
 
@@ -331,7 +351,7 @@ final class AppResourceMonitor: @unchecked Sendable {
             return metadata
         }
 
-        if let network = latestNetwork[pid] {
+        if let network = latestNetwork[pid], ProcessIdentity.capture(for: pid) == network.identity {
             return ProcessMetadata(
                 displayName: network.processName,
                 bundleIdentifier: network.bundleIdentifier,
@@ -375,6 +395,7 @@ final class AppResourceMonitor: @unchecked Sendable {
         let displayName: String
         let bundleIdentifier: String?
         let icon: NSImage?
+        var owningAppName: String? = nil
     }
 }
 

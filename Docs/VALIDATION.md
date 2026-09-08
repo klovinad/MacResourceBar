@@ -1,0 +1,81 @@
+# Local validation — 2026-09-07
+
+MacResourceBar **1.2 (4)** was built and checked on an Apple silicon Mac running macOS 27.0. The universal binary contains both `arm64` and `x86_64`; Intel execution and macOS 13 execution have not been tested on physical hardware.
+
+## Automated checks
+
+- `swift test`: **25 tests passed**. Coverage includes CPU time-unit conversion against an independent native measurement, live process memory reads, 64-bit network-counter decoding, counter resets, PID reuse, unavailable metrics, bounded `nettop` failure handling, helper grouping, filters, preference reload, and continued CPU/memory sampling during slow disk discovery.
+- `./script/build_and_run.sh --build-only`: Debug build passed.
+- `RELEASE_DIR=Release/qa/2026-09-07/package ./script/package_dmg.sh`: universal Release app and local DMG passed build, strict code-signature verification, architecture checks, and `hdiutil verify`.
+- Shell syntax checks and independent Swift typechecks passed for the build, packaging, launch, and measurement scripts.
+- `RELEASE_MODE=public ./script/package_dmg.sh` exited with status 2 because a Developer ID Application identity is missing. No public artifact was produced.
+
+## Installed application
+
+The package was installed at the standard Applications location after preserving the previous bundle and preferences locally. A release receipt verified the installed bundle tree, the executable checksum, the running executable path, and its mapped inode against the built package.
+
+Live checks observed:
+
+- The popover opens and reports system CPU, memory, temperature, disk and network activity under concurrent media transfers.
+- Full, Compact and Mini can be selected from the popover header. Both refresh options update their selected state; the same selection appears in Settings.
+- Search narrows the table by application name, the no-match state appears for a temporary query, and clearing that query restores the list.
+- General and Menu Bar settings render with the saved tray order, external disks, opacity, source and launch preference. Network totals warm up and report the selected interface after a refresh-mode change.
+- Closing the popover stops per-application sampling. No persistent child `nettop` remained during the closed-panel check.
+
+Synthetic UI text entry was occasionally interrupted by concurrent user interaction. Successful checks above were accepted from the resulting visible state, not from the action response alone. Process termination, launch-at-login changes and permission changes were not exercised against user applications.
+
+## Responsiveness and overhead
+
+Measurements are local observations under an active workload, not a cross-device benchmark. CPU percentages use one logical core as 100%. The measurement script includes CPU consumed by reaped helper processes.
+
+| Scenario | Observation |
+| --- | --- |
+| First popover layout | 301 ms |
+| Repeated popover layout | 54–106 ms |
+| Closed panel, 10-second refresh, 30 seconds | 0.48% application CPU + 0.13% helpers = **0.61% combined**; about 74 MiB physical footprint |
+| Closed panel, 1-second refresh, 20 seconds | **2.42%** application CPU; about 69 MiB footprint |
+| Visible portions of a 60-second interaction session, 1-second refresh | About **11.3%** application CPU + 0.3% helpers over 25 fully visible one-second samples; included search, style changes and accessibility inspection |
+
+The initial 18.6% measurement mixed open and closed panel time and is not a comparable steady-state baseline. Visibility logs were used for the final measurements. The layout timer covers the synchronous show/layout path; it is not a display-frame or input-latency measurement. Steady open-panel overhead without UI automation and subjective interaction quality should also be checked by a person.
+
+Local receipts, timing logs, measurements and rollback files live under the ignored `Release/qa/2026-09-07/` directory. They contain machine-specific evidence and are not part of the public repository.
+
+## Public release gate
+
+**The source and local development package are checked; the public installer remains on hold.** The local app and DMG use ad-hoc signing. Follow [RELEASE.md](../RELEASE.md) to supply Developer ID Application signing, notarize and staple the app and DMG, and pass Gatekeeper assessment before publishing a binary release.
+
+## Tray layouts — 1.2 (5), 2026-09-08
+
+Two lines and Icons are available from the popover header and Menu Bar settings. Two lines fills columns from top to bottom, preserving the selected metric order and keeping network directions together. Icons uses a single row. Both share measured layout code with the settings preview, keep unavailable values explicit, and reserve value widths so neighbouring metrics stay in place.
+
+- `swift test`: **29 tests passed**, including stable columns across zero/three-digit/unavailable values, odd metric counts, network-pair overflow, both styles across preference reload, and mouse forwarding to the native status button.
+- Debug and universal Release builds passed; the local DMG passed signature, architecture and image verification. The installed build at `/Applications/MacResourceBar.app` and its running executable match the release receipt.
+- Both layouts were inspected in the actual macOS menu bar. Native checks confirmed selection from the popover, matching selection and preview in Settings, return to Full, visible keyboard focus, and the Two lines selection after relaunch. The final local selection is Two lines.
+- A drawing layer uses the status button's semantic foreground colour to keep small values readable. The native cell retains a corresponding image; mouse gestures route to its original action, and the native accessibility label/value still describes all metrics.
+- Synthetic desktop clicks and arrow-key selection were inconsistent during concurrent desktop interaction; they are **not** accepted as manual mouse/keyboard verification. A person should confirm opening/closing from the menu bar, the context menu and arrow-key selection on their desktop. Actual light-menu-bar appearance and Retina/Intel hardware were not exercised in this follow-up.
+
+A 30.7-second read-only run after a fresh launch, with Two lines and 10-second refresh, measured **0.61% combined CPU** on the one-core scale and a median **23.5 MiB** footprint. All 30 visibility samples confirmed a closed panel. This is a local observation under concurrent media transfers, not a comparison with the earlier open-panel history state. The measured white glyph interior on the current blue menu-bar background had a **6.84:1** contrast ratio.
+
+The latest local receipts, screenshots and rollback bundles are under ignored `Release/qa/2026-09-07-tray/`. This remains an ad-hoc development package; the public signing and notarization gate above is unchanged.
+
+## Explicit text styles — 1.2 (6), 2026-09-08
+
+Full and Compact now keep the selected text format when the menu bar is narrow. The previous Full -> Compact -> Mini fallback could make two choices look identical. Overflow retains the selected labels, shows `+N`, and keeps both network directions together; the tooltip and panel retain all selected values. A missing network sample uses the same `N/A` label as its reserved text slot.
+
+- The identical Full/Compact rendering was reproduced on the installed build 5. After installing build 6, the user confirmed that the styles are visibly different.
+- `swift test`: **29 tests passed**. The native-button forwarding test now explicitly creates `NSApplication`, which the macOS 15 CI runner did not create before action dispatch. Its existing click and outside-release assertions are unchanged.
+- Debug and universal Release builds passed. The local DMG passed architecture, signature and image verification. The installed app and running executable passed release-receipt correspondence.
+- CI's bundle-version check was brought forward to build 6. The selected metric order, sampling intervals and the new graphic layouts are unchanged by this follow-up.
+
+Follow-up receipts, screenshots and the previous app bundle are under ignored `Release/qa/2026-09-08-full/`. Public signing/notarization and the manual/hardware checks recorded above remain separate acceptance gates.
+
+## Three two-line styles — 1.2 (7), 2026-09-08
+
+The saved style picker now offers Two lines, Two lines compact and Two lines icons. The compact variants use short rate units and closer columns; the icon variant retains external disk labels and network arrows. All three use fixed value fields with right-aligned digits. Settings uses a menu picker so all seven styles fit.
+
+- `swift test`: **31 tests passed**. Coverage includes all eight displayed values across unit boundaries, rounding, zero, three-digit percentages and `N/A`; fixed column positions and unclipped values; network-pair overflow; and persistence for all graphic styles.
+- The universal Release build and local DMG passed architecture, signature and image verification. The installed build 7 and running executable passed release-receipt correspondence.
+- All three styles were inspected in the actual menu bar and Settings preview, with both external disks and both network directions visible. The popover and Settings choices agree. Two lines compact survived a normal quit/relaunch; the original Two lines selection was restored after the check.
+- Settings keyboard checks passed: Tab visibly focused the style picker, Space opened it, and Home/Enter selected Two lines. Measured glyph-interior contrast was **6.81:1** on the current menu bar and **14.67:1** in the light Settings preview.
+
+Build command: `RELEASE_DIR=Release/qa/2026-09-08-density/package ./script/package_dmg.sh`. Local screenshots, receipts, test/build logs and the previous installed app are under ignored `Release/qa/2026-09-08-density/`. The existing public signing/notarization and untested hardware gates still apply; this change did not alter sampling or re-measure its overhead.

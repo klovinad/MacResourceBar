@@ -62,6 +62,22 @@ enum ByteRateFormatter {
         bytesPerSecond <= 0 ? "Off" : string(for: bytesPerSecond)
     }
 
+    /// The three two-line layouts reserve the widest unit and four integer
+    /// digits. Keep a tenth of a unit, including across rounding boundaries.
+    static func twoLineMenuRate(for bytesPerSecond: Double, shortUnits: Bool) -> String {
+        guard bytesPerSecond.isFinite else { return "N/A" }
+        if bytesPerSecond >= 1023.95 * pow(1024, 4) {
+            return shortUnits ? "1024+T" : "1024+TB/s"
+        }
+        let rate = stableMenuRate(for: bytesPerSecond, preferredUnitIndex: nil)
+        guard shortUnits else { return rate.text }
+        let units = ["B", "K", "M", "G", "T"]
+        let suffix = ["B/s", "KB/s", "MB/s", "GB/s", "TB/s"][rate.unitIndex]
+        var number = String(rate.text.dropLast(suffix.count))
+        if number.hasSuffix(".0") { number.removeLast(2) }
+        return number + units[rate.unitIndex]
+    }
+
     static func cardRate(for bytesPerSecond: Double) -> String {
         string(for: bytesPerSecond)
     }

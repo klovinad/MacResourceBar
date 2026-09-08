@@ -9,6 +9,7 @@ struct NetworkProcessSample {
     let icon: NSImage?
     let downloadBytesPerSecond: Double
     let uploadBytesPerSecond: Double
+    let identity: ProcessIdentity
 }
 
 final class NetworkProcessMonitor: @unchecked Sendable {
@@ -16,22 +17,35 @@ final class NetworkProcessMonitor: @unchecked Sendable {
     var onStatusChange: ((String?) -> Void)?
 
     private let queue = DispatchQueue(label: "NetworkMenuMonitor.NetworkProcessMonitor")
-    private let ioQueue = DispatchQueue(
-        label: "NetworkMenuMonitor.NetworkProcessMonitor.IO",
-        qos: .utility,
-        attributes: .concurrent
-    )
     private let queueKey = DispatchSpecificKey<UInt8>()
-    private var timer: DispatchSourceTimer?
+    private var watchdogTimer: DispatchSourceTimer?
+    private var restartWorkItem: DispatchWorkItem?
     private var process: Process?
-    private var previousSnapshot: CumulativeSnapshot?
+    private var outputPipe: Pipe?
+    private var errorPipe: Pipe?
+    private var outputBuffer = Data()
+    private var errorBuffer = Data()
+    private var frameCounters: [pid_t: CumulativeProcessCounters] = [:]
+    private var hasOpenFrame = false
+    private var lastPublishedSnapshot: CumulativeSnapshot?
+    private var hasUsableRateSample = false
+    private var lastFrameTimestamp: CFAbsoluteTime?
     private var pollingInterval: TimeInterval = 1
     private var isRunning = false
     private var lifecycleGeneration: UInt64 = 0
+    private var processGeneration: UInt64 = 0
+    private var consecutiveRestartCount = 0
+    private var validFramesSinceLaunch = 0
     private var lastPublishedStatus: String?
     private var hasPublishedStatus = false
+    private let executableURL: URL
 
-    init() {
+    private static let maximumBufferedBytes = 1_048_576
+    private static let maximumErrorBytes = 16_384
+    private var networkSamplingInterval: TimeInterval { max(5, pollingInterval) }
+
+    init(executableURL: URL = URL(fileURLWithPath: "/usr/bin/nettop")) {
+        self.executableURL = executableURL
         queue.setSpecific(key: queueKey, value: 1)
     }
 
@@ -72,10 +86,11 @@ final class NetworkProcessMonitor: @unchecked Sendable {
             guard abs(normalizedInterval - monitor.pollingInterval) > 0.01 else { return }
             monitor.pollingInterval = normalizedInterval
             if monitor.isRunning {
-                let nextDelay = monitor.previousSnapshot == nil
-                    ? min(normalizedInterval, 1)
-                    : normalizedInterval
-                monitor.scheduleTimerLocked(deadline: .now() + nextDelay)
+                monitor.restartWorkItem?.cancel()
+                monitor.restartWorkItem = nil
+                monitor.tearDownProcessLocked(terminate: true)
+                monitor.consecutiveRestartCount = 0
+                monitor.launchProcessLocked()
             }
         }
     }
@@ -85,54 +100,63 @@ final class NetworkProcessMonitor: @unchecked Sendable {
 
         isRunning = true
         lifecycleGeneration &+= 1
-        previousSnapshot = nil
+        consecutiveRestartCount = 0
+        validFramesSinceLaunch = 0
         publishStatus(nil)
-        scheduleTimerLocked(deadline: .now())
+        launchProcessLocked()
+        startWatchdogLocked()
     }
 
     private func stopLocked() {
         isRunning = false
         lifecycleGeneration &+= 1
-        timer?.cancel()
-        timer = nil
-        previousSnapshot = nil
-
-        if let process {
-            process.terminationHandler = nil
-            if process.isRunning {
-                process.terminate()
-            }
-        }
-        self.process = nil
+        restartWorkItem?.cancel()
+        restartWorkItem = nil
+        watchdogTimer?.cancel()
+        watchdogTimer = nil
+        tearDownProcessLocked(terminate: true)
         publishStatus(nil)
     }
 
-    private func scheduleTimerLocked(deadline: DispatchTime) {
-        timer?.cancel()
-
+    private func startWatchdogLocked() {
+        watchdogTimer?.cancel()
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        let leewayMilliseconds = Int(
-            min(max(pollingInterval * 100, 100), 1_000)
-        )
-        timer.schedule(
-            deadline: deadline,
-            repeating: pollingInterval,
-            leeway: .milliseconds(leewayMilliseconds)
-        )
+        timer.schedule(deadline: .now() + 3, repeating: 3, leeway: .milliseconds(500))
         timer.setEventHandler { [weak self] in
-            self?.captureSnapshotLocked()
+            self?.checkProcessHealthLocked()
         }
         timer.resume()
-        self.timer = timer
+        watchdogTimer = timer
     }
 
-    private func captureSnapshotLocked() {
-        guard isRunning, process == nil else { return }
+    private func checkProcessHealthLocked() {
+        guard isRunning else { return }
+        guard process != nil else {
+            guard restartWorkItem == nil else { return }
+            scheduleRestartLocked(reason: "nettop is not running")
+            return
+        }
 
-        let pipe = Pipe()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/nettop")
-        process.arguments = [
+        let maximumSilence = max(8, pollingInterval * 2 + 5)
+        if let lastFrameTimestamp,
+           ProcessInfo.processInfo.systemUptime - lastFrameTimestamp > maximumSilence {
+            scheduleRestartLocked(reason: "nettop stopped producing data")
+        }
+    }
+
+    private func launchProcessLocked() {
+        guard isRunning, process == nil, restartWorkItem == nil else { return }
+
+        let newOutputPipe = Pipe()
+        let newErrorPipe = Pipe()
+        let newProcess = Process()
+        // A persistent nettop process consumes an entire CPU core even at a
+        // long display interval. A single cumulative CSV frame completes in a
+        // few milliseconds; rates are calculated between these bounded
+        // snapshots. Network samples are capped at once every five seconds,
+        // while CPU, memory and disk can still follow the 1-second UI mode.
+        newProcess.executableURL = executableURL
+        newProcess.arguments = [
             "-P",
             "-L", "1",
             "-x",
@@ -141,124 +165,222 @@ final class NetworkProcessMonitor: @unchecked Sendable {
             "-t", "external",
             "-J", "bytes_in,bytes_out"
         ]
-        process.standardOutput = pipe
-        process.standardError = pipe
+        newProcess.standardOutput = newOutputPipe
+        newProcess.standardError = newErrorPipe
+
+        processGeneration &+= 1
+        let generation = processGeneration
+        newOutputPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            self?.queue.async { [weak self] in
+                self?.consumeOutputLocked(data, generation: generation)
+            }
+        }
+        newErrorPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            self?.queue.async { [weak self] in
+                self?.consumeErrorLocked(data, generation: generation)
+            }
+        }
+        newProcess.terminationHandler = { [weak self, weak newProcess] finishedProcess in
+            // Let readability callbacks enqueue the final CSV bytes before the
+            // termination record is evaluated.
+            self?.queue.asyncAfter(deadline: .now() + .milliseconds(50)) { [weak self, weak newProcess] in
+                guard let self, let newProcess, newProcess === finishedProcess else { return }
+                self.processTerminatedLocked(newProcess, generation: generation)
+            }
+        }
 
         do {
-            try process.run()
-            self.process = process
+            try newProcess.run()
+            process = newProcess
+            outputPipe = newOutputPipe
+            errorPipe = newErrorPipe
+            outputBuffer.removeAll(keepingCapacity: true)
+            errorBuffer.removeAll(keepingCapacity: true)
+            frameCounters.removeAll(keepingCapacity: true)
+            hasOpenFrame = false
+            lastFrameTimestamp = ProcessInfo.processInfo.systemUptime
         } catch {
+            newOutputPipe.fileHandleForReading.readabilityHandler = nil
+            newErrorPipe.fileHandleForReading.readabilityHandler = nil
             publishStatus("Per-app monitoring is unavailable because nettop could not be started: \(error.localizedDescription)")
-            return
-        }
-
-        let generation = lifecycleGeneration
-        let outputHandle = pipe.fileHandleForReading
-        let stateQueue = queue
-
-        ioQueue.async { [weak self, process, outputHandle, stateQueue] in
-            let data = outputHandle.readDataToEndOfFile()
-            process.waitUntilExit()
-            let terminationStatus = process.terminationStatus
-
-            stateQueue.async { [weak self, process] in
-                self?.finishSnapshotLocked(
-                    process: process,
-                    data: data,
-                    terminationStatus: terminationStatus,
-                    generation: generation
-                )
-            }
+            scheduleRestartLocked(reason: nil)
         }
     }
 
-    private func finishSnapshotLocked(
-        process finishedProcess: Process,
-        data: Data,
-        terminationStatus: Int32,
-        generation: UInt64
-    ) {
-        guard
-            generation == lifecycleGeneration,
-            process === finishedProcess
-        else {
+    private func consumeOutputLocked(_ data: Data, generation: UInt64) {
+        guard generation == processGeneration, isRunning else { return }
+        outputBuffer.append(data)
+        guard outputBuffer.count <= Self.maximumBufferedBytes else {
+            scheduleRestartLocked(reason: "nettop returned an oversized CSV record")
             return
         }
 
-        process = nil
+        while let newlineIndex = outputBuffer.firstIndex(of: 0x0A) {
+            let lineData = outputBuffer[..<newlineIndex]
+            outputBuffer.removeSubrange(...newlineIndex)
+            guard let line = String(data: lineData, encoding: .utf8) else {
+                scheduleRestartLocked(reason: "nettop returned invalid UTF-8 data")
+                return
+            }
+            consumeCSVLineLocked(line.trimmingCharacters(in: .newlines))
+            guard process != nil else { return }
+        }
+    }
+
+    private func consumeCSVLineLocked(_ line: String) {
+        let record = NetTopCSVRecord.parse(line)
+        if record == .header {
+            if hasOpenFrame { finishFrameLocked() }
+            frameCounters.removeAll(keepingCapacity: true)
+            hasOpenFrame = true
+            return
+        }
+        guard hasOpenFrame else {
+            scheduleRestartLocked(reason: "nettop returned data before its CSV header")
+            return
+        }
+        guard case let .process(pid, processToken, bytesIn, bytesOut) = record else { return }
+
+        if let existing = frameCounters[pid] {
+            frameCounters[pid] = CumulativeProcessCounters(
+                processToken: existing.processToken,
+                bytesIn: Self.saturatedSum(existing.bytesIn, bytesIn),
+                bytesOut: Self.saturatedSum(existing.bytesOut, bytesOut),
+                identity: existing.identity
+            )
+        } else {
+            frameCounters[pid] = CumulativeProcessCounters(
+                processToken: processToken,
+                bytesIn: bytesIn,
+                bytesOut: bytesOut,
+                identity: ProcessIdentity.capture(for: pid)
+            )
+        }
+    }
+
+    private func finishFrameLocked() {
+        let now = ProcessInfo.processInfo.systemUptime
+        lastFrameTimestamp = now
+        validFramesSinceLaunch += 1
+        if validFramesSinceLaunch >= 2 {
+            consecutiveRestartCount = 0
+            publishStatus(nil)
+        }
+
+        let currentSnapshot = CumulativeSnapshot(timestamp: now, countersByPID: frameCounters)
+        guard let previous = lastPublishedSnapshot else {
+            lastPublishedSnapshot = currentSnapshot
+            return
+        }
+        let baselineAge = now - previous.timestamp
+        guard SamplingFreshnessPolicy.canReuseBaseline(
+            age: baselineAge,
+            regularInterval: networkSamplingInterval
+        ) else {
+            // A long-hidden popover must not present an average across the
+            // entire closed interval as a current rate. Start a fresh baseline;
+            // processTerminatedLocked will request the follow-up in one second.
+            lastPublishedSnapshot = currentSnapshot
+            hasUsableRateSample = false
+            return
+        }
+        // Launch cadence already enforces the steady-state interval. A one-
+        // second second frame is intentional for initial/stale warm-up.
+        guard baselineAge >= min(pollingInterval, 1) * 0.9 else { return }
+
+        lastPublishedSnapshot = currentSnapshot
+        let rates = Self.rateSamples(previous: previous, current: currentSnapshot)
+        hasUsableRateSample = true
+        resolveMetadataAndPublish(rates, lifecycleGeneration: lifecycleGeneration)
+    }
+
+    private func consumeErrorLocked(_ data: Data, generation: UInt64) {
+        guard generation == processGeneration, isRunning else { return }
+        errorBuffer.append(data)
+        if errorBuffer.count > Self.maximumErrorBytes {
+            errorBuffer.removeFirst(errorBuffer.count - Self.maximumErrorBytes)
+        }
+    }
+
+    private func processTerminatedLocked(_ finishedProcess: Process, generation: UInt64) {
+        guard generation == processGeneration, process === finishedProcess else { return }
+        let status = finishedProcess.terminationStatus
+        let stderr = String(data: errorBuffer, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let completedFrame = status == 0 && hasOpenFrame
+        if completedFrame {
+            finishFrameLocked()
+        }
+        tearDownProcessLocked(terminate: false)
         guard isRunning else { return }
 
-        guard terminationStatus == 0 else {
-            publishStatus("Per-app monitoring is unavailable because nettop exited with status \(terminationStatus).")
+        if completedFrame {
+            consecutiveRestartCount = 0
+            // The first cumulative snapshot is only a baseline. Take the
+            // second promptly so initial opening has no five- or ten-second
+            // false-zero window. Reopens reuse the retained baseline.
+            scheduleLaunchLocked(after: hasUsableRateSample ? networkSamplingInterval : 1)
             return
         }
 
-        let now = CFAbsoluteTimeGetCurrent()
-        let counters = parseCumulativeCounters(from: data)
-        let currentSnapshot = CumulativeSnapshot(
-            timestamp: now,
-            countersByPID: counters
-        )
-
-        let isInitialSnapshot = previousSnapshot == nil
-        let rates = rateSamples(
-            previous: previousSnapshot,
-            current: currentSnapshot
-        )
-        previousSnapshot = currentSnapshot
-        publishStatus(nil)
-        resolveMetadataAndPublish(rates, generation: generation)
-        if isInitialSnapshot, pollingInterval > 1 {
-            // A cumulative first snapshot has no rate. Do one quick follow-up
-            // so Eco mode does not leave Network empty for ten seconds.
-            scheduleTimerLocked(deadline: .now() + 1)
+        var message = "Per-app monitoring is unavailable because nettop exited with status \(status)."
+        if let stderr, !stderr.isEmpty {
+            message += " \(stderr.prefix(240))"
         }
+        publishStatus(message)
+        scheduleRestartLocked(reason: nil)
     }
 
-    private func parseCumulativeCounters(from data: Data) -> [pid_t: CumulativeProcessCounters] {
-        guard let output = String(data: data, encoding: .utf8) else { return [:] }
-
-        var countersByPID: [pid_t: CumulativeProcessCounters] = [:]
-
-        for rawLine in output.split(whereSeparator: \.isNewline) {
-            var columns = rawLine
-                .split(separator: ",", omittingEmptySubsequences: false)
-                .map(String.init)
-
-            while columns.last?.isEmpty == true {
-                columns.removeLast()
-            }
-
-            guard columns.count >= 3 else { continue }
-            guard
-                let bytesOut = UInt64(columns.removeLast()),
-                let bytesIn = UInt64(columns.removeLast())
-            else {
-                continue
-            }
-
-            let processToken = columns.joined(separator: ",")
-            guard let pid = Self.extractPID(from: processToken) else { continue }
-
-            if let existing = countersByPID[pid] {
-                countersByPID[pid] = CumulativeProcessCounters(
-                    processToken: existing.processToken,
-                    bytesIn: Self.saturatedSum(existing.bytesIn, bytesIn),
-                    bytesOut: Self.saturatedSum(existing.bytesOut, bytesOut)
-                )
-            } else {
-                countersByPID[pid] = CumulativeProcessCounters(
-                    processToken: processToken,
-                    bytesIn: bytesIn,
-                    bytesOut: bytesOut
-                )
-            }
+    private func scheduleRestartLocked(reason: String?) {
+        guard isRunning, restartWorkItem == nil else { return }
+        if let reason {
+            publishStatus("Per-app monitoring is restarting because \(reason).")
         }
+        tearDownProcessLocked(terminate: true)
 
-        return countersByPID
+        let exponent = min(consecutiveRestartCount, 5)
+        let delay = min(pow(2, Double(exponent)), 30)
+        consecutiveRestartCount += 1
+        scheduleLaunchLocked(after: delay)
     }
 
-    private func rateSamples(
+    private func scheduleLaunchLocked(after delay: TimeInterval) {
+        guard isRunning, restartWorkItem == nil else { return }
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.restartWorkItem = nil
+            self.launchProcessLocked()
+        }
+        restartWorkItem = workItem
+        queue.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private func tearDownProcessLocked(terminate: Bool) {
+        // Invalidate output and termination callbacks that may already be
+        // queued for the process being torn down. Published samples are tied
+        // to the wider start/stop lifecycle instead.
+        processGeneration &+= 1
+        outputPipe?.fileHandleForReading.readabilityHandler = nil
+        errorPipe?.fileHandleForReading.readabilityHandler = nil
+        process?.terminationHandler = nil
+        if terminate, process?.isRunning == true {
+            process?.terminate()
+        }
+        process = nil
+        outputPipe = nil
+        errorPipe = nil
+        outputBuffer.removeAll(keepingCapacity: false)
+        errorBuffer.removeAll(keepingCapacity: false)
+        frameCounters.removeAll(keepingCapacity: false)
+        hasOpenFrame = false
+        lastFrameTimestamp = nil
+    }
+
+    static func rateSamples(
         previous: CumulativeSnapshot?,
         current: CumulativeSnapshot
     ) -> [RawRateSample] {
@@ -275,37 +397,38 @@ final class NetworkProcessMonitor: @unchecked Sendable {
         for (pid, currentCounters) in current.countersByPID {
             guard
                 let previousCounters = previous.countersByPID[pid],
-                previousCounters.processToken == currentCounters.processToken
+                previousCounters.processToken == currentCounters.processToken,
+                let identity = currentCounters.identity,
+                previousCounters.identity == identity
             else {
                 continue
             }
 
-            let download = currentCounters.bytesIn >= previousCounters.bytesIn
-                ? Double(currentCounters.bytesIn - previousCounters.bytesIn) / elapsed
-                : 0
-            let upload = currentCounters.bytesOut >= previousCounters.bytesOut
-                ? Double(currentCounters.bytesOut - previousCounters.bytesOut) / elapsed
-                : 0
+            guard let download = CounterRatePolicy.rate(current: currentCounters.bytesIn, previous: previousCounters.bytesIn, elapsed: elapsed, maximumAge: 15),
+                  let upload = CounterRatePolicy.rate(current: currentCounters.bytesOut, previous: previousCounters.bytesOut, elapsed: elapsed, maximumAge: 15) else { continue }
+
             guard download > 0 || upload > 0 else { continue }
 
             samples.append(RawRateSample(
                 pid: pid,
                 processToken: currentCounters.processToken,
                 downloadBytesPerSecond: download,
-                uploadBytesPerSecond: upload
+                uploadBytesPerSecond: upload,
+                identity: identity
             ))
         }
 
         return samples.sorted { $0.pid < $1.pid }
     }
 
-    private func resolveMetadataAndPublish(_ rates: [RawRateSample], generation: UInt64) {
+    private func resolveMetadataAndPublish(_ rates: [RawRateSample], lifecycleGeneration: UInt64) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
 
             let samples = rates.compactMap { rate -> NetworkProcessSample? in
                 let metadata = AppMetadata(processToken: rate.processToken)
-                guard metadata.pid == rate.pid else { return nil }
+                guard metadata.pid == rate.pid,
+                      ProcessIdentity.capture(for: rate.pid) == rate.identity else { return nil }
 
                 return NetworkProcessSample(
                     pid: rate.pid,
@@ -313,7 +436,8 @@ final class NetworkProcessMonitor: @unchecked Sendable {
                     bundleIdentifier: metadata.bundleIdentifier,
                     icon: metadata.icon,
                     downloadBytesPerSecond: rate.downloadBytesPerSecond,
-                    uploadBytesPerSecond: rate.uploadBytesPerSecond
+                    uploadBytesPerSecond: rate.uploadBytesPerSecond,
+                    identity: rate.identity
                 )
             }
 
@@ -321,7 +445,7 @@ final class NetworkProcessMonitor: @unchecked Sendable {
                 guard
                     let self,
                     self.isRunning,
-                    self.lifecycleGeneration == generation
+                    self.lifecycleGeneration == lifecycleGeneration
                 else {
                     return
                 }
@@ -355,22 +479,24 @@ final class NetworkProcessMonitor: @unchecked Sendable {
         }
     }
 
-    private struct CumulativeProcessCounters {
+    struct CumulativeProcessCounters {
         let processToken: String
         let bytesIn: UInt64
         let bytesOut: UInt64
+        let identity: ProcessIdentity?
     }
 
-    private struct CumulativeSnapshot {
+    struct CumulativeSnapshot {
         let timestamp: CFAbsoluteTime
         let countersByPID: [pid_t: CumulativeProcessCounters]
     }
 
-    private struct RawRateSample {
+    struct RawRateSample {
         let pid: pid_t
         let processToken: String
         let downloadBytesPerSecond: Double
         let uploadBytesPerSecond: Double
+        let identity: ProcessIdentity
     }
 }
 
@@ -414,11 +540,11 @@ private struct AppMetadata {
 
     private static func runningApplication(for pid: pid_t) -> NSRunningApplication? {
         if Thread.isMainThread {
-            return NSWorkspace.shared.runningApplications.first { $0.processIdentifier == pid }
+            return NSRunningApplication(processIdentifier: pid)
         }
 
         return DispatchQueue.main.sync {
-            NSWorkspace.shared.runningApplications.first { $0.processIdentifier == pid }
+            NSRunningApplication(processIdentifier: pid)
         }
     }
 }

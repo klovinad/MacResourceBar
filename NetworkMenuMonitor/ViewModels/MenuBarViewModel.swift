@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import SwiftUI
 @MainActor
 final class MenuBarViewModel: ObservableObject {
     private enum RefreshProfile {
@@ -16,7 +17,7 @@ final class MenuBarViewModel: ObservableObject {
 
         var label: String {
             switch self {
-            case .totalRate:      "Activity"
+            case .totalRate:      "Overall"
             case .cpuRate:        "CPU"
             case .memoryRate:     "Memory"
             case .diskRate:       "Disk"
@@ -36,7 +37,7 @@ final class MenuBarViewModel: ObservableObject {
 
         var label: String {
             switch self {
-            case .all: "Activity"
+            case .all: "All"
             case .cpu: "CPU"
             case .memory: "Memory"
             case .disk: "Disk"
@@ -80,6 +81,10 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     enum MenuBarLabelStyle: String, CaseIterable, Identifiable {
+        case twoLines
+        case twoLinesCompact
+        case twoLinesIcons
+        case icons
         case full
         case compact
         case mini
@@ -88,6 +93,10 @@ final class MenuBarViewModel: ObservableObject {
 
         var label: String {
             switch self {
+            case .twoLines: "Two lines"
+            case .twoLinesCompact: "Two lines compact"
+            case .twoLinesIcons: "Two lines icons"
+            case .icons: "Icons"
             case .full: "Full"
             case .compact: "Compact"
             case .mini: "Mini"
@@ -96,9 +105,23 @@ final class MenuBarViewModel: ObservableObject {
 
         var helpText: String {
             switch self {
+            case .twoLines: "Two rows in each column. Network download and upload stay together."
+            case .twoLinesCompact: "Two rows with short units and closer columns. B / K / M / G / T mean bytes / KB / MB / GB / TB per second."
+            case .twoLinesIcons: "Two rows with resource icons and short units. Disk names and network arrows stay visible. B / K / M / G / T mean bytes / KB / MB / GB / TB per second."
+            case .icons: "One row with resource icons and larger values."
             case .full: "Readable labels with compact rates."
             case .compact: "Short labels with clear separators."
             case .mini: "Smallest format that keeps values and directions clear."
+            }
+        }
+
+        var graphicStyle: MenuBarGraphicRenderer.Style? {
+            switch self {
+            case .twoLines: .twoLines
+            case .twoLinesCompact: .twoLinesCompact
+            case .twoLinesIcons: .twoLinesIcons
+            case .icons: .icons
+            case .full, .compact, .mini: nil
             }
         }
     }
@@ -107,10 +130,14 @@ final class MenuBarViewModel: ObservableObject {
         let id: String
         let text: String
         let widthTemplate: String
+        var pairID: String? = nil
     }
 
     @Published private(set) var totalDownloadBytesPerSecond: Double = 0
     @Published private(set) var totalUploadBytesPerSecond: Double = 0
+    @Published private(set) var networkTotalsLastUpdatedAt: Date?
+    @Published private(set) var networkTotalsStatusMessage: String?
+    @Published private(set) var networkSourceDescription = "Primary interface"
     @Published private(set) var appSnapshots: [AppResourceSnapshot] = []
     @Published private(set) var appSnapshotsAreFresh = false
     @Published private(set) var historySamples: [ResourceHistorySample] = []
@@ -121,6 +148,13 @@ final class MenuBarViewModel: ObservableObject {
     @Published private(set) var memoryUsagePercent: Double = 0
     @Published private(set) var diskActivityMBPerSecond: Double = 0
     @Published private(set) var cpuTemperatureCelsius: Double?
+    @Published private(set) var cpuMetricIsAvailable = false
+    @Published private(set) var memoryMetricIsAvailable = false
+    @Published private(set) var diskMetricIsAvailable = false
+    @Published private(set) var systemMetricsLastUpdatedAt: Date?
+    @Published private(set) var compressedMemoryBytes: UInt64?
+    @Published private(set) var swapUsedBytes: UInt64?
+    @Published private(set) var memoryPressure: SystemMetricsSample.MemoryPressure = .normal
     @Published private(set) var menuBarTitle = "↓ 0M ↑ 0M"
     @Published var launchAtLoginEnabled = LaunchAtLoginService.isEnabled
     @Published var appDisplayThresholdBytesPerSecond: Double
@@ -139,8 +173,9 @@ final class MenuBarViewModel: ObservableObject {
     @Published private(set) var availableExternalDiskActivities: [ExternalDiskActivity] = []
     @Published private(set) var externalDiskSelectionMode: ExternalDiskSelectionMode
     @Published private(set) var selectedExternalDiskIDs: [String]
+    @Published private(set) var networkSource: NetworkTotalsMonitor.Source
 
-    private let preferences = MenuBarPreferences()
+    private let preferences: MenuBarPreferences
     private let totalsMonitor = NetworkTotalsMonitor()
     private let appResourceMonitor = AppResourceMonitor()
     private let systemMetricsMonitor = SystemMetricsMonitor()
@@ -148,6 +183,7 @@ final class MenuBarViewModel: ObservableObject {
     private let minimumVisibleRate: Double = 16
     private let maximumHistorySampleCount = 300
     private var perAppMonitoringVisible = false
+    private var settingsVisible = false
     private var appSnapshotsRevision = 0
     private var cachedAppSnapshotLists: (
         key: AppSnapshotListsCacheKey,
@@ -192,15 +228,7 @@ final class MenuBarViewModel: ObservableObject {
         100
     ]
 
-    let totalActivityThresholdOptions: [Double] = [
-        0,
-        1,
-        5,
-        10,
-        25,
-        50,
-        100
-    ]
+    let totalActivityThresholdOptions: [Double] = [0]
 
     let memoryThresholdOptions: [Double] = [
         0,
@@ -212,7 +240,8 @@ final class MenuBarViewModel: ObservableObject {
         512 * 1024 * 1024
     ]
 
-    init() {
+    init(preferences: MenuBarPreferences = MenuBarPreferences(), startMonitoring: Bool = true) {
+        self.preferences = preferences
         appDisplayThresholdBytesPerSecond = preferences.appResourceThreshold
         appResourceFilter = AppResourceFilter(rawValue: preferences.appResourceFilterRawValue ?? "") ?? .all
         appSortOrder = AppSortOrder(rawValue: preferences.appSortOrderRawValue ?? "") ?? .totalRate
@@ -229,6 +258,9 @@ final class MenuBarViewModel: ObservableObject {
             rawValue: preferences.externalDiskSelectionModeRawValue ?? ""
         ) ?? .all
         selectedExternalDiskIDs = preferences.selectedExternalDiskIDs
+        networkSource = NetworkTotalsMonitor.Source(
+            rawValue: preferences.networkSourceRawValue ?? ""
+        ) ?? .primary
         menuBarLabelStyle = MenuBarLabelStyle(
             rawValue: preferences.menuBarLabelStyleRawValue ?? ""
         ) ?? .compact
@@ -257,6 +289,9 @@ final class MenuBarViewModel: ObservableObject {
                     current: self.totalUploadBytesPerSecond,
                     incoming: sample.uploadBytesPerSecond
                 )
+                self.networkTotalsLastUpdatedAt = sample.timestamp
+                self.networkTotalsStatusMessage = nil
+                self.networkSourceDescription = sample.sourceDescription
                 self.refreshMenuBarTitle()
             }
         }
@@ -264,6 +299,19 @@ final class MenuBarViewModel: ObservableObject {
         totalsMonitor.onReset = { [weak self] in
             Task { @MainActor in
                 self?.handleNetworkPathReset()
+            }
+        }
+
+        totalsMonitor.onStatusChange = { [weak self] message in
+            Task { @MainActor in
+                guard let self else { return }
+                self.networkTotalsStatusMessage = message
+                if message != nil {
+                    self.totalDownloadBytesPerSecond = 0
+                    self.totalUploadBytesPerSecond = 0
+                    self.networkTotalsLastUpdatedAt = nil
+                    self.refreshMenuBarTitle()
+                }
             }
         }
 
@@ -287,10 +335,29 @@ final class MenuBarViewModel: ObservableObject {
         systemMetricsMonitor.onSample = { [weak self] sample in
             Task { @MainActor in
                 guard let self else { return }
-                self.cpuUsagePercent = sample.cpuUsagePercent
-                self.memoryUsagePercent = sample.memoryUsagePercent
-                self.diskActivityMBPerSecond = sample.diskActivityMBPerSecond
+                if let value = sample.cpuUsagePercent {
+                    self.cpuUsagePercent = value
+                    self.cpuMetricIsAvailable = true
+                } else {
+                    self.cpuMetricIsAvailable = false
+                }
+                if let value = sample.memoryUsagePercent {
+                    self.memoryUsagePercent = value
+                    self.memoryMetricIsAvailable = true
+                } else {
+                    self.memoryMetricIsAvailable = false
+                }
+                if let value = sample.diskActivityMBPerSecond {
+                    self.diskActivityMBPerSecond = value
+                    self.diskMetricIsAvailable = true
+                } else {
+                    self.diskMetricIsAvailable = false
+                }
                 self.cpuTemperatureCelsius = sample.cpuTemperatureCelsius
+                self.compressedMemoryBytes = sample.compressedMemoryBytes
+                self.swapUsedBytes = sample.swapUsedBytes
+                self.memoryPressure = sample.memoryPressure
+                self.systemMetricsLastUpdatedAt = sample.timestamp
                 self.recordHistorySample()
                 self.refreshMenuBarTitle()
             }
@@ -300,14 +367,18 @@ final class MenuBarViewModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.availableExternalDiskActivities = activities
+                self.migrateExternalDiskSelectionIfNeeded(using: activities)
                 self.refreshExternalDiskSelection()
                 self.refreshMenuBarTitle()
             }
         }
 
-        totalsMonitor.start()
-        systemMetricsMonitor.start()
-        applyRefreshMode()
+        if startMonitoring {
+            totalsMonitor.setSource(networkSource)
+            totalsMonitor.start()
+            systemMetricsMonitor.start()
+            applyRefreshMode()
+        }
     }
 
     var filteredAppSnapshots: [AppResourceSnapshot] {
@@ -345,10 +416,7 @@ final class MenuBarViewModel: ObservableObject {
             let visibleKeySet = Set(visibleKeys)
             let availableKeys = visibleKeys
                 + snapshotLists.table.map(\.orderKey).filter { !visibleKeySet.contains($0) }
-            let availableKeySet = Set(availableKeys)
-            customAppOrder = customAppOrder.filter { availableKeySet.contains($0) }
-            let storedKeys = Set(customAppOrder)
-            customAppOrder.append(contentsOf: availableKeys.filter { !storedKeys.contains($0) })
+            customAppOrder = customOrderIncludingAvailableKeys(availableKeys)
             preferences.customAppOrder = customAppOrder
         }
         appSortOrder = order
@@ -359,10 +427,7 @@ final class MenuBarViewModel: ObservableObject {
         guard draggedKey != targetKey else { return }
 
         let availableKeys = appTableSnapshots.map(\.orderKey)
-        let availableKeySet = Set(availableKeys)
-        var order = customAppOrder.filter { availableKeySet.contains($0) }
-        let knownKeys = Set(order)
-        order.append(contentsOf: availableKeys.filter { !knownKeys.contains($0) })
+        var order = customOrderIncludingAvailableKeys(availableKeys)
 
         guard
             let sourceIndex = order.firstIndex(of: draggedKey),
@@ -384,14 +449,15 @@ final class MenuBarViewModel: ObservableObject {
 
     func moveAppToEnd(withKey draggedKey: String) {
         let availableKeys = appTableSnapshots.map(\.orderKey)
-        let availableKeySet = Set(availableKeys)
-        var order = customAppOrder.filter { availableKeySet.contains($0) }
-        let knownKeys = Set(order)
-        order.append(contentsOf: availableKeys.filter { !knownKeys.contains($0) })
+        var order = customOrderIncludingAvailableKeys(availableKeys)
         order.removeAll { $0 == draggedKey }
         order.append(draggedKey)
         customAppOrder = order
         preferences.customAppOrder = order
+    }
+
+    private func customOrderIncludingAvailableKeys(_ availableKeys: [String]) -> [String] {
+        StableOrderPolicy.merging(stored: customAppOrder, available: availableKeys)
     }
 
     func setAppResourceFilter(_ filter: AppResourceFilter) {
@@ -408,8 +474,7 @@ final class MenuBarViewModel: ObservableObject {
     var thresholdDescription: String {
         switch appResourceFilter {
         case .all:
-            if appDisplayThresholdBytesPerSecond <= 0 { return "Off" }
-            return String(format: "%.0f activity pts", appDisplayThresholdBytesPerSecond)
+            return "Off"
         case .disk, .network:
             return ByteRateFormatter.thresholdString(for: appDisplayThresholdBytesPerSecond)
         case .cpu:
@@ -427,6 +492,38 @@ final class MenuBarViewModel: ObservableObject {
 
     var visiblePerAppStatusMessage: String? {
         perAppStatusMessage
+    }
+
+    var monitoringHasIssue: Bool {
+        visiblePerAppStatusMessage != nil
+            || networkTotalsStatusMessage != nil
+            || networkTotalsLastUpdatedAt == nil
+            || !cpuMetricIsAvailable
+            || !memoryMetricIsAvailable
+            || !diskMetricIsAvailable
+    }
+
+    var monitoringStatusSummary: String {
+        monitoringHasIssue ? "Some data unavailable" : "Monitoring active"
+    }
+
+    var monitoringIssueDetails: String {
+        var messages: [String] = []
+        if let networkTotalsStatusMessage { messages.append(networkTotalsStatusMessage) }
+        else if networkTotalsLastUpdatedAt == nil { messages.append("Network traffic is warming up") }
+        if !cpuMetricIsAvailable { messages.append("CPU is warming up or unavailable") }
+        if !memoryMetricIsAvailable { messages.append("Memory is unavailable") }
+        if !diskMetricIsAvailable { messages.append("Internal disk activity is warming up or unavailable") }
+        if let visiblePerAppStatusMessage { messages.append(visiblePerAppStatusMessage) }
+        return messages.isEmpty ? "All selected monitors are reporting" : messages.joined(separator: ". ")
+    }
+
+    var memoryPressureLabel: String {
+        switch memoryPressure {
+        case .normal: "Normal"
+        case .warning: "Warning"
+        case .critical: "Critical"
+        }
     }
 
     private func thresholdOptions(for filter: AppResourceFilter) -> [Double] {
@@ -487,19 +584,104 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     func menuBarDisplaySlots(for style: MenuBarLabelStyle) -> [MenuBarDisplaySlot] {
-        orderedVisibleTrayMetrics.flatMap {
-            trayDisplaySlots(for: $0, style: style)
+        if style.graphicStyle != nil {
+            return menuBarGraphicEntries(for: style).map {
+                MenuBarDisplaySlot(id: $0.id, text: "\($0.label) \($0.value)",
+                                   widthTemplate: "\($0.label) \($0.widthTemplate)")
+            }
         }
+        let slots = orderedVisibleTrayMetrics.flatMap { metric in
+            trayDisplaySlots(for: metric, style: style).map { slot in
+                var result = slot
+                result.pairID = metric == .network ? "network" : nil
+                return result
+            }
+        }
+        guard slots.isEmpty else { return slots }
+
+        // An explicitly empty external-disk selection is valid, but the last
+        // visible metric must never collapse into an invisible click target.
+        return [MenuBarDisplaySlot(
+            id: "status-item-fallback",
+            text: "MRB",
+            widthTemplate: "MRB"
+        )]
     }
 
     var menuBarMiniDisplaySlots: [MenuBarDisplaySlot] {
         menuBarDisplaySlots(for: .mini)
     }
 
+    func menuBarGraphicEntries(for style: MenuBarLabelStyle) -> [MenuBarGraphicEntry] {
+        let detailed = style == .twoLines
+        let shortUnits = style == .twoLinesCompact || style == .twoLinesIcons
+        func rate(_ bytes: Double) -> String {
+            detailed || shortUnits ? ByteRateFormatter.twoLineMenuRate(for: bytes, shortUnits: shortUnits)
+                : readableMiniTrayRate(for: bytes)
+        }
+        let rateTemplate = detailed ? "1023.9MB/s" : (shortUnits ? "1023.9M" : "999M")
+        func networkRate(_ bytes: Double) -> String {
+            if shortUnits { return rate(bytes) }
+            return detailed ? ByteRateFormatter.networkFullMenuRate(for: bytes)
+                : ByteRateFormatter.networkMenuRate(for: bytes)
+        }
+        let networkTemplate = detailed ? "999+ MB/s" : rateTemplate
+        let entries = orderedVisibleTrayMetrics.flatMap { metric -> [MenuBarGraphicEntry] in
+            switch metric {
+            case .network:
+                return [
+                    MenuBarGraphicEntry(id: "network-download", label: "↓",
+                        value: networkTotalsLastUpdatedAt == nil ? "N/A" : networkRate(totalDownloadBytesPerSecond),
+                        widthTemplate: networkTemplate, symbolName: "arrow.down", pairID: "network"),
+                    MenuBarGraphicEntry(id: "network-upload", label: "↑",
+                        value: networkTotalsLastUpdatedAt == nil ? "N/A" : networkRate(totalUploadBytesPerSecond),
+                        widthTemplate: networkTemplate, symbolName: "arrow.up", pairID: "network")
+                ]
+            case .cpu:
+                return [MenuBarGraphicEntry(id: metric.rawValue, label: "CPU", value: formattedCPUUsage,
+                    widthTemplate: "100%", symbolName: "cpu")]
+            case .memory:
+                return [MenuBarGraphicEntry(id: metric.rawValue, label: "RAM", value: formattedMemoryUsage,
+                    widthTemplate: "100%", symbolName: "memorychip")]
+            case .cpuTemp:
+                return [MenuBarGraphicEntry(id: metric.rawValue, label: "Temp",
+                    value: cpuTemperatureCelsius.map { String(format: "%.0f°", $0) } ?? "N/A",
+                    widthTemplate: "100°", symbolName: "thermometer.medium")]
+            case .disk:
+                return [MenuBarGraphicEntry(id: metric.rawValue, label: "Disk",
+                    value: diskMetricIsAvailable ? rate(max(diskActivityMBPerSecond, 0) * 1024 * 1024) : "N/A",
+                    widthTemplate: rateTemplate, symbolName: "internaldrive")]
+            case .externalDisk:
+                guard !externalDiskActivities.isEmpty else {
+                    return externalDiskSelectionIsExplicitlyEmpty ? [] : [MenuBarGraphicEntry(
+                        id: "external-disk-unavailable", label: "EXT", value: "N/A",
+                        widthTemplate: rateTemplate, symbolName: "externaldrive")]
+                }
+                return externalDiskActivities.map { disk in
+                    MenuBarGraphicEntry(id: "external-disk-\(disk.persistentID)", label: externalDiskShortLabel(disk),
+                        value: disk.activityIsAvailable ? rate(disk.readBytesPerSecond + disk.writeBytesPerSecond) : "N/A",
+                        widthTemplate: rateTemplate, symbolName: "externaldrive", showsLabelWithIcon: true)
+                }
+            }
+        }
+        return entries.isEmpty ? [MenuBarGraphicEntry(
+            id: "status-item-fallback", label: "", value: "MRB", widthTemplate: "MRB", symbolName: nil
+        )] : entries
+    }
+
     var menuBarAccessibilityComponents: [String] {
-        orderedVisibleTrayMetrics.flatMap {
+        let components = orderedVisibleTrayMetrics.flatMap {
             accessibilityTrayComponents(for: $0)
         }
+        return components.isEmpty
+            ? ["MacResourceBar, no external disks selected"]
+            : components
+    }
+
+    private var externalDiskSelectionIsExplicitlyEmpty: Bool {
+        externalDiskSelectionMode == .selected
+            && !availableExternalDiskActivities.isEmpty
+            && externalDiskActivities.isEmpty
     }
 
     var menuBarComponentSeparator: String {
@@ -511,23 +693,64 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     var formattedCPUUsage: String {
-        percentString(cpuUsagePercent)
+        cpuMetricIsAvailable ? percentString(cpuUsagePercent) : "N/A"
     }
 
     var formattedMemoryUsage: String {
-        percentString(memoryUsagePercent)
+        memoryMetricIsAvailable ? percentString(memoryUsagePercent) : "N/A"
     }
 
     var formattedDiskActivity: String {
-        ByteRateFormatter.cardRate(
+        guard diskMetricIsAvailable else { return "N/A" }
+        return ByteRateFormatter.cardRate(
             for: max(diskActivityMBPerSecond, 0) * 1024 * 1024
         )
     }
 
+    var formattedCompressedMemory: String {
+        guard let compressedMemoryBytes else { return "N/A" }
+        return Self.memoryFormatter.string(fromByteCount: Int64(clamping: compressedMemoryBytes))
+    }
+
+    var formattedSwapUsed: String {
+        guard let swapUsedBytes else { return "N/A" }
+        return Self.memoryFormatter.string(fromByteCount: Int64(clamping: swapUsedBytes))
+    }
+
+    var systemMetricsFreshnessText: String {
+        guard let systemMetricsLastUpdatedAt else { return "Waiting for system metrics" }
+        let age = max(Int(Date().timeIntervalSince(systemMetricsLastUpdatedAt).rounded()), 0)
+        return age <= 1 ? "Updated now" : "Updated \(age) seconds ago"
+    }
+
+    var networkFreshnessText: String {
+        if let networkTotalsStatusMessage {
+            return networkTotalsStatusMessage
+        }
+        guard let networkTotalsLastUpdatedAt else { return "Waiting for network traffic" }
+        let age = max(Int(Date().timeIntervalSince(networkTotalsLastUpdatedAt).rounded()), 0)
+        let freshness = age <= 1 ? "updated now" : "updated \(age) seconds ago"
+        return "\(networkSourceDescription), \(freshness)"
+    }
+
+    var processMonitoringStateText: String {
+        if let visiblePerAppStatusMessage {
+            return visiblePerAppStatusMessage
+        }
+        guard perAppMonitoringVisible else { return "Runs only while the popover is open" }
+        return appSnapshotsAreFresh
+            ? "Current, \(appSnapshots.count) application rows"
+            : "Collecting application activity"
+    }
+
     var formattedExternalDiskActivity: String {
-        ByteRateFormatter.cardRate(
-            for: externalDiskActivities.reduce(0.0) {
-                $0 + $1.readBytesPerSecond + $1.writeBytesPerSecond
+        guard externalDiskActivities.contains(where: \.activityIsAvailable) else {
+            return "N/A"
+        }
+        return ByteRateFormatter.cardRate(
+            for: externalDiskActivities.reduce(0.0) { result, disk in
+                guard disk.activityIsAvailable else { return result }
+                return result + disk.readBytesPerSecond + disk.writeBytesPerSecond
             }
         )
     }
@@ -557,6 +780,16 @@ final class MenuBarViewModel: ObservableObject {
         highRefreshEnabled = enabled
         preferences.highRefreshEnabled = enabled
         applyRefreshMode()
+    }
+
+    func setNetworkSource(_ source: NetworkTotalsMonitor.Source) {
+        guard networkSource != source else { return }
+        networkSource = source
+        preferences.networkSourceRawValue = source.rawValue
+        networkTotalsLastUpdatedAt = nil
+        networkTotalsStatusMessage = "Waiting for \(source.label.lowercased()) traffic"
+        totalsMonitor.setSource(source)
+        refreshMenuBarTitle()
     }
 
     func setAppSearchText(_ text: String) {
@@ -597,6 +830,14 @@ final class MenuBarViewModel: ObservableObject {
         refreshMenuBarTitle()
     }
 
+    func moveMenuBarLabelStyle(_ direction: MoveCommandDirection) {
+        guard direction == .left || direction == .right,
+              let current = MenuBarLabelStyle.allCases.firstIndex(of: menuBarLabelStyle) else { return }
+        let next = current + (direction == .left ? -1 : 1)
+        guard MenuBarLabelStyle.allCases.indices.contains(next) else { return }
+        setMenuBarLabelStyle(MenuBarLabelStyle.allCases[next])
+    }
+
     func setPopoverVisible(_ visible: Bool) {
         guard perAppMonitoringVisible != visible else { return }
         perAppMonitoringVisible = visible
@@ -607,6 +848,13 @@ final class MenuBarViewModel: ObservableObject {
         } else {
             appResourceMonitor.stop()
         }
+        updateSystemCollectionOptions()
+    }
+
+    func setSettingsVisible(_ visible: Bool) {
+        guard settingsVisible != visible else { return }
+        settingsVisible = visible
+        updateSystemCollectionOptions()
     }
 
     func setExternalDiskSelectionMode(_ mode: ExternalDiskSelectionMode) {
@@ -615,7 +863,7 @@ final class MenuBarViewModel: ObservableObject {
         preferences.externalDiskSelectionModeRawValue = mode.rawValue
 
         if mode == .selected && selectedExternalDiskIDs.isEmpty {
-            selectedExternalDiskIDs = availableExternalDiskActivities.map(\.bsdName)
+            selectedExternalDiskIDs = availableExternalDiskActivities.map(\.persistentID)
             preferences.selectedExternalDiskIDs = selectedExternalDiskIDs
         }
 
@@ -628,7 +876,7 @@ final class MenuBarViewModel: ObservableObject {
         if externalDiskSelectionMode == .all {
             return true
         }
-        return selectedExternalDiskIDs.contains(disk.bsdName)
+        return selectedExternalDiskIDs.contains(disk.persistentID)
     }
 
     func externalDiskShownInMenuBar(_ disk: ExternalDiskActivity) -> Bool {
@@ -642,7 +890,7 @@ final class MenuBarViewModel: ObservableObject {
             // unexpectedly restoring every connected disk.
             externalDiskSelectionMode = .selected
             preferences.externalDiskSelectionModeRawValue = ExternalDiskSelectionMode.selected.rawValue
-            selectedExternalDiskIDs = [disk.bsdName]
+            selectedExternalDiskIDs = [disk.persistentID]
             preferences.selectedExternalDiskIDs = selectedExternalDiskIDs
             refreshExternalDiskSelection()
             toggleTrayMetric(.externalDisk)
@@ -663,15 +911,15 @@ final class MenuBarViewModel: ObservableObject {
             guard !selected else { return }
             externalDiskSelectionMode = .selected
             preferences.externalDiskSelectionModeRawValue = ExternalDiskSelectionMode.selected.rawValue
-            selectedExternalDiskIDs = availableExternalDiskActivities.map(\.bsdName)
+            selectedExternalDiskIDs = availableExternalDiskActivities.map(\.persistentID)
         }
 
         if selected {
-            if !selectedExternalDiskIDs.contains(disk.bsdName) {
-                selectedExternalDiskIDs.append(disk.bsdName)
+            if !selectedExternalDiskIDs.contains(disk.persistentID) {
+                selectedExternalDiskIDs.append(disk.persistentID)
             }
         } else {
-            selectedExternalDiskIDs.removeAll { $0 == disk.bsdName }
+            selectedExternalDiskIDs.removeAll { $0 == disk.persistentID }
         }
 
         preferences.selectedExternalDiskIDs = selectedExternalDiskIDs
@@ -681,13 +929,47 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     func terminateProcess(_ snapshot: AppResourceSnapshot) {
-        // The confirmation alert can close the transient popover, which marks
-        // the table stale before the modal returns. The click itself is only
-        // enabled for a fresh snapshot, so preserve that already-authorized
-        // action instead of silently discarding it after confirmation.
-        guard !snapshot.pids.isEmpty else { return }
-        for pid in snapshot.pids {
-            kill(pid, SIGTERM)
+        let candidates = snapshot.pids.filter { pid in
+            pid > 1 && pid != getpid() && snapshot.processIdentities[pid] != nil
+        }
+        guard !candidates.isEmpty else {
+            perAppStatusMessage = "This process can no longer be terminated safely. Refresh the list and try again."
+            return
+        }
+
+        var terminated = 0
+        var skipped = 0
+        var failures: [String] = []
+
+        for pid in candidates {
+            guard
+                let expected = snapshot.processIdentities[pid],
+                let current = ProcessIdentity.capture(for: pid),
+                current.startTimeMicroseconds == expected.startTimeMicroseconds,
+                expected.executablePath == nil || current.executablePath == expected.executablePath
+            else {
+                skipped += 1
+                continue
+            }
+
+            if kill(pid, SIGTERM) == 0 {
+                terminated += 1
+            } else {
+                let reason = String(cString: strerror(errno))
+                failures.append("PID \(pid): \(reason)")
+            }
+        }
+
+        if failures.isEmpty, skipped == 0 {
+            perAppStatusMessage = terminated == 1
+                ? "Termination request sent to \(snapshot.displayName)."
+                : "Termination requests sent to \(terminated) processes in \(snapshot.displayName)."
+        } else {
+            var parts: [String] = []
+            if terminated > 0 { parts.append("sent: \(terminated)") }
+            if skipped > 0 { parts.append("changed or already closed: \(skipped)") }
+            if !failures.isEmpty { parts.append(failures.joined(separator: "; ")) }
+            perAppStatusMessage = "Termination result for \(snapshot.displayName): " + parts.joined(separator: ", ")
         }
     }
 
@@ -721,6 +1003,7 @@ final class MenuBarViewModel: ObservableObject {
             selectedTrayMetrics = [.network]
         }
         persistTrayConfiguration()
+        updateSystemCollectionOptions()
         refreshMenuBarTitle()
     }
 
@@ -736,6 +1019,7 @@ final class MenuBarViewModel: ObservableObject {
         selectedTrayMetrics = Self.normalizedSelectedMetrics(selectedTrayMetrics, using: trayMetricOrder)
 
         persistTrayConfiguration()
+        updateSystemCollectionOptions()
         refreshMenuBarTitle()
     }
 
@@ -791,6 +1075,9 @@ final class MenuBarViewModel: ObservableObject {
 
         switch metric {
         case .network:
+            guard networkTotalsLastUpdatedAt != nil else {
+                return [MenuBarDisplaySlot(id: metric.rawValue, text: "NET N/A", widthTemplate: "NET 999M")]
+            }
             return [
                 MenuBarDisplaySlot(
                     id: "network-download",
@@ -807,7 +1094,9 @@ final class MenuBarViewModel: ObservableObject {
             return [
                 MenuBarDisplaySlot(
                     id: metric.rawValue,
-                    text: miniGaugeText(prefix: "C", value: cpuUsagePercent, suffix: "%"),
+                    text: cpuMetricIsAvailable
+                        ? miniGaugeText(prefix: "C", value: cpuUsagePercent, suffix: "%")
+                        : "C N/A",
                     widthTemplate: "C 999%"
                 )
             ]
@@ -817,7 +1106,7 @@ final class MenuBarViewModel: ObservableObject {
                     id: metric.rawValue,
                     text: cpuTemperatureCelsius.map {
                         miniGaugeText(prefix: "T", value: $0, suffix: "°")
-                    } ?? "T —",
+                    } ?? "T N/A",
                     widthTemplate: "T 999°"
                 )
             ]
@@ -825,7 +1114,9 @@ final class MenuBarViewModel: ObservableObject {
             return [
                 MenuBarDisplaySlot(
                     id: metric.rawValue,
-                    text: miniGaugeText(prefix: "R", value: memoryUsagePercent, suffix: "%"),
+                    text: memoryMetricIsAvailable
+                        ? miniGaugeText(prefix: "R", value: memoryUsagePercent, suffix: "%")
+                        : "R N/A",
                     widthTemplate: "R 999%"
                 )
             ]
@@ -833,16 +1124,21 @@ final class MenuBarViewModel: ObservableObject {
             return [
                 MenuBarDisplaySlot(
                     id: metric.rawValue,
-                    text: "D \(readableMiniTrayRate(for: diskBytesPerSecond))",
+                    text: diskMetricIsAvailable
+                        ? "D \(readableMiniTrayRate(for: diskBytesPerSecond))"
+                        : "D N/A",
                     widthTemplate: "D 999M"
                 )
             ]
         case .externalDisk:
             guard !externalDiskActivities.isEmpty else {
+                if externalDiskSelectionIsExplicitlyEmpty {
+                    return []
+                }
                 return [
                     MenuBarDisplaySlot(
                         id: "external-disk-unavailable",
-                        text: "EXT —",
+                        text: "EXT N/A",
                         widthTemplate: "EXT 999M"
                     )
                 ]
@@ -850,9 +1146,16 @@ final class MenuBarViewModel: ObservableObject {
 
             return externalDiskActivities.map { disk in
                 let label = externalDiskShortLabel(disk)
+                guard disk.activityIsAvailable else {
+                    return MenuBarDisplaySlot(
+                        id: "external-disk-\(disk.persistentID)",
+                        text: "\(label) N/A",
+                        widthTemplate: "\(label) 999M"
+                    )
+                }
                 let bytesPerSecond = disk.readBytesPerSecond + disk.writeBytesPerSecond
                 return MenuBarDisplaySlot(
-                    id: "external-disk-\(disk.bsdName)",
+                    id: "external-disk-\(disk.persistentID)",
                     text: "\(label) \(readableMiniTrayRate(for: bytesPerSecond))",
                     widthTemplate: "\(label) 999M"
                 )
@@ -885,40 +1188,65 @@ final class MenuBarViewModel: ObservableObject {
     ) -> [String] {
         switch metric {
         case .network:
+            guard networkTotalsLastUpdatedAt != nil else {
+                switch style {
+                case .full: return ["Network N/A"]
+                case .compact, .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["NET N/A"]
+                }
+            }
             switch style {
             case .full: return ["Network ↓ 999+ MB/s", "↑ 999+ MB/s"]
             case .compact: return ["↓ 999M", "↑ 999M"]
-            case .mini: return miniTraySlots(for: metric).map(\.widthTemplate)
+            case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return miniTraySlots(for: metric).map(\.widthTemplate)
             }
         case .cpu:
+            guard cpuMetricIsAvailable else {
+                switch style {
+                case .full, .compact: return ["CPU N/A"]
+                case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["C N/A"]
+                }
+            }
             switch style {
             case .full, .compact: return ["CPU 100%"]
-            case .mini: return ["C 100%"]
+            case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["C 100%"]
             }
         case .cpuTemp:
             switch style {
             case .full: return ["Temp 100°C"]
             case .compact: return ["T 100°"]
-            case .mini: return ["T 100°"]
+            case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["T 100°"]
             }
         case .memory:
+            guard memoryMetricIsAvailable else {
+                switch style {
+                case .full: return ["Memory N/A"]
+                case .compact: return ["RAM N/A"]
+                case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["R N/A"]
+                }
+            }
             switch style {
             case .full: return ["Memory 100%"]
             case .compact: return ["RAM 100%"]
-            case .mini: return ["R 100%"]
+            case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["R 100%"]
             }
         case .disk:
+            guard diskMetricIsAvailable else {
+                return [style == .full ? "Disk N/A" : "D N/A"]
+            }
             switch style {
             case .full: return ["Disk 1023.9M"]
             case .compact: return ["D 999M"]
-            case .mini: return ["D 999M"]
+            case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["D 999M"]
             }
         case .externalDisk:
             guard !externalDiskActivities.isEmpty else {
+                if externalDiskSelectionIsExplicitlyEmpty {
+                    return []
+                }
                 switch style {
-                case .full: return ["External disks —"]
-                case .compact: return ["EXT —"]
-                case .mini: return ["EXT 999M"]
+                case .full: return ["External disks N/A"]
+                case .compact: return ["EXT N/A"]
+                case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["EXT 999M"]
                 }
             }
 
@@ -941,6 +1269,9 @@ final class MenuBarViewModel: ObservableObject {
 
         switch metric {
         case .network:
+            guard networkTotalsLastUpdatedAt != nil else {
+                return [style == .full ? "Network N/A" : "NET N/A"]
+            }
             switch style {
             case .full:
                 return [
@@ -952,26 +1283,32 @@ final class MenuBarViewModel: ObservableObject {
                     "↓ \(ByteRateFormatter.networkMenuRate(for: totalDownloadBytesPerSecond))",
                     "↑ \(ByteRateFormatter.networkMenuRate(for: totalUploadBytesPerSecond))"
                 ]
-            case .mini:
+            case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons:
                 return [
                     "↓ \(ByteRateFormatter.networkMenuRate(for: totalDownloadBytesPerSecond))",
                     "↑ \(ByteRateFormatter.networkMenuRate(for: totalUploadBytesPerSecond))"
                 ]
             }
         case .cpu:
+            guard cpuMetricIsAvailable else {
+                switch style {
+                case .full, .compact: return ["CPU N/A"]
+                case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["C N/A"]
+                }
+            }
             switch style {
             case .full:
                 return [String(format: "CPU %.0f%%", cpuUsagePercent)]
             case .compact:
                 return [String(format: "CPU %.0f%%", cpuUsagePercent)]
-            case .mini:
+            case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons:
                 return [String(format: "C%.0f%%", cpuUsagePercent)]
             }
         case .cpuTemp:
             guard let cpuTemperatureCelsius else {
                 switch style {
-                case .full: return ["Temp —"]
-                case .compact, .mini: return ["T—"]
+                case .full: return ["Temp N/A"]
+                case .compact, .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["T N/A"]
                 }
             }
             switch style {
@@ -979,37 +1316,57 @@ final class MenuBarViewModel: ObservableObject {
                 return [String(format: "Temp %.0f°C", cpuTemperatureCelsius)]
             case .compact:
                 return [String(format: "T %.0f°", cpuTemperatureCelsius)]
-            case .mini:
+            case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons:
                 return [String(format: "T%.0f°", cpuTemperatureCelsius)]
             }
         case .memory:
+            guard memoryMetricIsAvailable else {
+                switch style {
+                case .full: return ["Memory N/A"]
+                case .compact: return ["RAM N/A"]
+                case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["R N/A"]
+                }
+            }
             switch style {
             case .full:
                 return [String(format: "Memory %.0f%%", memoryUsagePercent)]
             case .compact:
                 return [String(format: "RAM %.0f%%", memoryUsagePercent)]
-            case .mini:
+            case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons:
                 return [String(format: "R%.0f%%", memoryUsagePercent)]
             }
         case .disk:
+            guard diskMetricIsAvailable else {
+                switch style {
+                case .full: return ["Disk N/A"]
+                case .compact, .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["D N/A"]
+                }
+            }
             switch style {
             case .full:
                 return ["Disk \(compactTrayRate(for: diskBytesPerSecond))"]
             case .compact:
                 return ["D \(readableMiniTrayRate(for: diskBytesPerSecond))"]
-            case .mini:
+            case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons:
                 return ["D\(miniTrayRate(for: diskBytesPerSecond))"]
             }
         case .externalDisk:
             guard !externalDiskActivities.isEmpty else {
+                if externalDiskSelectionIsExplicitlyEmpty {
+                    return []
+                }
                 switch style {
-                case .full: return ["External disks —"]
-                case .compact: return ["EXT—"]
-                case .mini: return ["X—"]
+                case .full: return ["External disks N/A"]
+                case .compact: return ["EXT N/A"]
+                case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["X N/A"]
                 }
             }
 
             return externalDiskActivities.map { disk in
+                guard disk.activityIsAvailable else {
+                    let label = externalDiskShortLabel(disk)
+                    return "\(label) N/A"
+                }
                 let bytesPerSecond = disk.readBytesPerSecond + disk.writeBytesPerSecond
                 switch style {
                 case .full:
@@ -1018,7 +1375,7 @@ final class MenuBarViewModel: ObservableObject {
                 case .compact:
                     return "\(externalDiskShortLabel(disk)) "
                         + readableMiniTrayRate(for: bytesPerSecond)
-                case .mini:
+                case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons:
                     return "\(externalDiskShortLabel(disk)):"
                         + miniTrayRate(for: bytesPerSecond)
                 }
@@ -1109,11 +1466,15 @@ final class MenuBarViewModel: ObservableObject {
 
         switch metric {
         case .network:
+            guard networkTotalsLastUpdatedAt != nil else {
+                return ["Network unavailable"]
+            }
             return [
                 "Network download \(ByteRateFormatter.networkCardRate(for: totalDownloadBytesPerSecond)), "
                     + "upload \(ByteRateFormatter.networkCardRate(for: totalUploadBytesPerSecond))"
             ]
         case .cpu:
+            guard cpuMetricIsAvailable else { return ["CPU unavailable"] }
             return [String(format: "CPU %.0f percent", cpuUsagePercent)]
         case .cpuTemp:
             guard let cpuTemperatureCelsius else {
@@ -1121,14 +1482,22 @@ final class MenuBarViewModel: ObservableObject {
             }
             return [String(format: "CPU temperature %.0f degrees Celsius", cpuTemperatureCelsius)]
         case .memory:
+            guard memoryMetricIsAvailable else { return ["Memory unavailable"] }
             return [String(format: "Memory %.0f percent", memoryUsagePercent)]
         case .disk:
+            guard diskMetricIsAvailable else { return ["Disk unavailable"] }
             return ["Disk \(ByteRateFormatter.string(for: diskBytesPerSecond))"]
         case .externalDisk:
             guard !externalDiskActivities.isEmpty else {
+                if externalDiskSelectionIsExplicitlyEmpty {
+                    return []
+                }
                 return ["External disks unavailable"]
             }
             return externalDiskActivities.map { disk in
+                guard disk.activityIsAvailable else {
+                    return "\(externalDiskDisplayLabel(for: disk)) unavailable"
+                }
                 let bytesPerSecond = disk.readBytesPerSecond + disk.writeBytesPerSecond
                 return "\(externalDiskDisplayLabel(for: disk)) "
                     + ByteRateFormatter.string(for: bytesPerSecond)
@@ -1174,9 +1543,18 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     func externalDiskRateText(for disk: ExternalDiskActivity) -> String {
-        ByteRateFormatter.cardRate(
+        guard disk.activityIsAvailable else { return "N/A" }
+        return ByteRateFormatter.cardRate(
             for: disk.readBytesPerSecond + disk.writeBytesPerSecond
         )
+    }
+
+    func externalDiskCapacityText(for disk: ExternalDiskActivity) -> String? {
+        guard let capacity = disk.capacityBytes else { return nil }
+        let total = ByteCountFormatter.string(fromByteCount: Int64(clamping: capacity), countStyle: .file)
+        guard let available = disk.availableBytes else { return total }
+        let free = ByteCountFormatter.string(fromByteCount: Int64(clamping: available), countStyle: .file)
+        return "\(free) free of \(total)"
     }
 
     private func persistTrayConfiguration() {
@@ -1199,14 +1577,10 @@ final class MenuBarViewModel: ObservableObject {
     private func handleNetworkPathReset() {
         totalDownloadBytesPerSecond = 0
         totalUploadBytesPerSecond = 0
-        appSnapshotsRevision &+= 1
-        appSnapshots = []
+        networkTotalsLastUpdatedAt = nil
         historySamples = []
-        perAppStatusMessage = nil
+        networkTotalsStatusMessage = "Waiting for network traffic sample"
         refreshMenuBarTitle()
-        if perAppMonitoringVisible {
-            appResourceMonitor.restart()
-        }
     }
 
     private func applyRefreshMode() {
@@ -1222,10 +1596,27 @@ final class MenuBarViewModel: ObservableObject {
         if perAppMonitoringVisible {
             appResourceMonitor.start()
         }
+        updateSystemCollectionOptions()
+    }
+
+    private func updateSystemCollectionOptions() {
+        if perAppMonitoringVisible || settingsVisible {
+            systemMetricsMonitor.setCollectionOptions(.all)
+            return
+        }
+
+        var options: SystemMetricsMonitor.CollectionOptions = []
+        let selected = Set(selectedTrayMetrics)
+        if selected.contains(.cpu) { options.insert(.cpu) }
+        if selected.contains(.memory) { options.insert(.memory) }
+        if selected.contains(.disk) { options.insert(.disk) }
+        if selected.contains(.cpuTemp) { options.insert(.temperature) }
+        if selected.contains(.externalDisk) { options.insert(.externalDisks) }
+        systemMetricsMonitor.setCollectionOptions(options)
     }
 
     private func refreshExternalDiskSelection() {
-        let availableIDs = Set(availableExternalDiskActivities.map(\.bsdName))
+        let availableIDs = Set(availableExternalDiskActivities.map(\.persistentID))
         let selectedIDs = Set(selectedExternalDiskIDs).intersection(availableIDs)
 
         switch externalDiskSelectionMode {
@@ -1233,9 +1624,24 @@ final class MenuBarViewModel: ObservableObject {
             externalDiskActivities = availableExternalDiskActivities
         case .selected:
             externalDiskActivities = availableExternalDiskActivities.filter {
-                selectedIDs.contains($0.bsdName)
+                selectedIDs.contains($0.persistentID)
             }
         }
+    }
+
+    private func migrateExternalDiskSelectionIfNeeded(using disks: [ExternalDiskActivity]) {
+        var migrated = selectedExternalDiskIDs
+        var changed = false
+        for disk in disks where migrated.contains(disk.bsdName) {
+            migrated.removeAll { $0 == disk.bsdName }
+            if !migrated.contains(disk.persistentID) {
+                migrated.append(disk.persistentID)
+            }
+            changed = true
+        }
+        guard changed else { return }
+        selectedExternalDiskIDs = migrated
+        preferences.selectedExternalDiskIDs = migrated
     }
 
     private func refreshMenuBarTitle() {
@@ -1245,6 +1651,9 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     private func recordHistorySample() {
+        guard cpuMetricIsAvailable, memoryMetricIsAvailable, diskMetricIsAvailable else {
+            return
+        }
         let diskBytesPerSecond = max(diskActivityMBPerSecond, 0) * 1024 * 1024
         let externalDiskBytesPerSecond = externalDiskActivities.reduce(0.0) {
             $0 + $1.readBytesPerSecond + $1.writeBytesPerSecond
@@ -1268,16 +1677,17 @@ final class MenuBarViewModel: ObservableObject {
     }
 
     private func recordExternalDiskHistory() {
-        let presentIDs = Set(externalDiskActivities.map(\.bsdName))
+        let presentIDs = Set(externalDiskActivities.map(\.persistentID))
         externalDiskHistoryByID = externalDiskHistoryByID.filter { presentIDs.contains($0.key) }
 
         for disk in externalDiskActivities {
-            var samples = externalDiskHistoryByID[disk.bsdName] ?? []
+            guard disk.activityIsAvailable else { continue }
+            var samples = externalDiskHistoryByID[disk.persistentID] ?? []
             samples.append(disk.readBytesPerSecond + disk.writeBytesPerSecond)
             if samples.count > maximumHistorySampleCount {
                 samples.removeFirst(samples.count - maximumHistorySampleCount)
             }
-            externalDiskHistoryByID[disk.bsdName] = samples
+            externalDiskHistoryByID[disk.persistentID] = samples
         }
     }
 

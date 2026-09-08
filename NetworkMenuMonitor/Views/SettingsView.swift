@@ -33,9 +33,16 @@ struct SettingsView: View {
                 ))
 
                 if let settingsErrorMessage = viewModel.settingsErrorMessage {
-                    Label(settingsErrorMessage, systemImage: "exclamationmark.triangle.fill")
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                            .accessibilityHidden(true)
+                        Text(settingsErrorMessage)
+                            .foregroundStyle(.primary)
+                    }
                         .font(.caption)
-                        .foregroundStyle(.orange)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("Settings warning: \(settingsErrorMessage)")
                 }
 
                 Picker("Refresh rate", selection: Binding(
@@ -46,6 +53,19 @@ struct SettingsView: View {
                     Text("10 seconds").tag(false)
                 }
                 .pickerStyle(.segmented)
+
+                Picker("Network source", selection: Binding(
+                    get: { viewModel.networkSource },
+                    set: { viewModel.setNetworkSource($0) }
+                )) {
+                    ForEach(NetworkTotalsMonitor.Source.allCases, id: \.self) { source in
+                        Text(source.label).tag(source)
+                    }
+                }
+
+                Text("Primary follows the active macOS route. All physical combines active Wi-Fi and Ethernet. Include VPN also counts tunnel interfaces.")
+                    .font(.caption)
+                    .foregroundStyle(.primary.opacity(0.75))
 
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
@@ -67,6 +87,26 @@ struct SettingsView: View {
                     .accessibilityValue("\(Int(viewModel.backgroundOpacity * 100)) percent")
                 }
             }
+
+            Section("Current Memory") {
+                LabeledContent("Pressure", value: viewModel.memoryPressureLabel)
+                LabeledContent("Compressed", value: viewModel.formattedCompressedMemory)
+                LabeledContent("Swap used", value: viewModel.formattedSwapUsed)
+
+                Text(viewModel.systemMetricsFreshnessText)
+                    .font(.caption)
+                    .foregroundStyle(.primary.opacity(0.75))
+            }
+
+            Section("Diagnostics") {
+                LabeledContent("System", value: viewModel.systemMetricsFreshnessText)
+                LabeledContent("Network", value: viewModel.networkFreshnessText)
+                LabeledContent("Applications", value: viewModel.processMonitoringStateText)
+
+                Text(viewModel.monitoringIssueDetails)
+                    .font(.caption)
+                    .foregroundStyle(.primary.opacity(0.75))
+            }
         }
         .formStyle(.grouped)
     }
@@ -74,7 +114,7 @@ struct SettingsView: View {
     private var menuBarSettings: some View {
         Form {
             Section("Menu Bar Appearance") {
-                Picker("Labels", selection: Binding(
+                Picker("Style", selection: Binding(
                     get: { viewModel.menuBarLabelStyle },
                     set: { viewModel.setMenuBarLabelStyle($0) }
                 )) {
@@ -82,25 +122,37 @@ struct SettingsView: View {
                         Text(style.label).tag(style)
                     }
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.menu)
+                .onMoveCommand(perform: viewModel.moveMenuBarLabelStyle)
 
                 Text(viewModel.menuBarLabelStyle.helpText)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.primary.opacity(0.75))
 
-                ScrollView(.horizontal, showsIndicators: false) {
-                    Text(viewModel.menuBarTitle)
-                        .font(.caption.monospacedDigit().weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .padding(.vertical, 2)
+                ScrollView(.horizontal, showsIndicators: true) {
+                    if let style = viewModel.menuBarLabelStyle.graphicStyle {
+                        Image(nsImage: MenuBarGraphicRenderer.image(for: MenuBarGraphicRenderer.layout(
+                            entries: viewModel.menuBarGraphicEntries(for: viewModel.menuBarLabelStyle), style: style
+                        )))
+                        .renderingMode(.template)
+                        .foregroundStyle(.primary)
+                        .padding(.vertical, 6)
+                    } else {
+                        Text(viewModel.menuBarTitle)
+                            .font(.caption.monospacedDigit().weight(.medium))
+                            .foregroundStyle(.primary)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .padding(.vertical, 6)
+                    }
                 }
                 .accessibilityLabel("Menu bar preview")
-                .accessibilityValue(viewModel.menuBarTitle)
+                .accessibilityValue(viewModel.menuBarAccessibilityComponents.joined(separator: ", "))
             }
 
             Section("Menu Bar Metrics") {
                 ForEach(viewModel.trayMetricOrder) { metric in
+                    let isRequired = viewModel.trayMetricEnabled(metric)
+                        && viewModel.selectedTrayMetrics.count == 1
                     Toggle(metric.title, isOn: Binding(
                         get: { viewModel.trayMetricEnabled(metric) },
                         set: { enabled in
@@ -109,11 +161,55 @@ struct SettingsView: View {
                             }
                         }
                     ))
+                    .disabled(isRequired)
+                    .help(
+                        isRequired
+                            ? "At least one metric must remain visible"
+                            : "Use Up or Down Arrow to reorder, or open the context menu"
+                    )
+                    .accessibilityHint(
+                        isRequired
+                            ? "At least one metric must remain visible"
+                            : "Use accessibility actions to change its menu bar position"
+                    )
+                    .accessibilityActions {
+                        if canMoveTrayMetric(metric, direction: -1) {
+                            Button("Move up") {
+                                moveTrayMetric(metric, direction: -1)
+                            }
+                        }
+                        if canMoveTrayMetric(metric, direction: 1) {
+                            Button("Move down") {
+                                moveTrayMetric(metric, direction: 1)
+                            }
+                        }
+                    }
+                    .onMoveCommand { direction in
+                        switch direction {
+                        case .up:
+                            moveTrayMetric(metric, direction: -1)
+                        case .down:
+                            moveTrayMetric(metric, direction: 1)
+                        default:
+                            break
+                        }
+                    }
+                    .contextMenu {
+                        Button("Move Up") {
+                            moveTrayMetric(metric, direction: -1)
+                        }
+                        .disabled(!canMoveTrayMetric(metric, direction: -1))
+
+                        Button("Move Down") {
+                            moveTrayMetric(metric, direction: 1)
+                        }
+                        .disabled(!canMoveTrayMetric(metric, direction: 1))
+                    }
                 }
 
-                Text("At least one metric must remain visible. Drag metrics in the popover to change their order.")
+                Text("At least one metric must remain visible. Focus a metric and use the arrow keys, open its context menu, or drag it in the popover to change the order.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.primary.opacity(0.75))
             }
 
             Section("External Disks") {
@@ -132,10 +228,10 @@ struct SettingsView: View {
                         : "Only checked external disks are shown, each with its own reading."
                 )
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.primary.opacity(0.75))
 
                 if viewModel.availableExternalDiskActivities.isEmpty {
-                    Text("No external disks detected")
+                    Label("No external disks detected", systemImage: "externaldrive.badge.questionmark")
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(viewModel.availableExternalDiskActivities) { disk in
@@ -146,12 +242,23 @@ struct SettingsView: View {
                             HStack {
                                 Image(systemName: disk.systemImageName)
                                     .foregroundStyle(.secondary)
-                                Text(disk.displayName)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(disk.displayName)
+                                    if let capacity = viewModel.externalDiskCapacityText(for: disk) {
+                                        Text(capacity)
+                                            .font(.caption)
+                                            .foregroundStyle(.primary.opacity(0.75))
+                                    }
+                                }
                                 Spacer()
                                 Text(disk.bsdName)
                                     .foregroundStyle(.secondary)
                             }
                         }
+                        .accessibilityLabel(disk.displayName)
+                        .accessibilityValue(
+                            "\(disk.bsdName), \(viewModel.externalDiskSelected(disk) ? "selected" : "not selected")"
+                        )
                     }
                 }
             }
@@ -174,7 +281,7 @@ struct SettingsView: View {
 
                 Text("System daemons are hidden unless they have recent network activity.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.primary.opacity(0.75))
             }
 
             Section("App Table") {
@@ -197,12 +304,14 @@ struct SettingsView: View {
                     }
                 }
 
-                Picker("Minimum", selection: Binding(
-                    get: { viewModel.appDisplayThresholdBytesPerSecond },
-                    set: { viewModel.setAppDisplayThreshold($0) }
-                )) {
-                    ForEach(viewModel.thresholdOptions, id: \.self) { threshold in
-                        Text(thresholdLabel(for: threshold)).tag(threshold)
+                if viewModel.appResourceFilter != .all {
+                    Picker("Minimum", selection: Binding(
+                        get: { viewModel.appDisplayThresholdBytesPerSecond },
+                        set: { viewModel.setAppDisplayThreshold($0) }
+                    )) {
+                        ForEach(viewModel.thresholdOptions, id: \.self) { threshold in
+                            Text(thresholdLabel(for: threshold)).tag(threshold)
+                        }
                     }
                 }
             }
@@ -213,7 +322,7 @@ struct SettingsView: View {
     private func thresholdLabel(for threshold: Double) -> String {
         switch viewModel.appResourceFilter {
         case .all:
-            return threshold <= 0 ? "Off" : "\(Int(threshold)) pts"
+            return "Off"
         case .cpu:
             return threshold <= 0 ? "Off" : "\(Int(threshold))%"
         case .memory:
@@ -224,5 +333,28 @@ struct SettingsView: View {
         case .disk, .network:
             return ByteRateFormatter.thresholdString(for: threshold)
         }
+    }
+
+    private func canMoveTrayMetric(
+        _ metric: MenuBarViewModel.TrayMetric,
+        direction: Int
+    ) -> Bool {
+        guard let index = viewModel.trayMetricOrder.firstIndex(of: metric) else { return false }
+        return viewModel.trayMetricOrder.indices.contains(index + direction)
+    }
+
+    private func moveTrayMetric(
+        _ metric: MenuBarViewModel.TrayMetric,
+        direction: Int
+    ) {
+        guard
+            let index = viewModel.trayMetricOrder.firstIndex(of: metric),
+            viewModel.trayMetricOrder.indices.contains(index + direction)
+        else {
+            return
+        }
+
+        let target = viewModel.trayMetricOrder[index + direction]
+        viewModel.moveTrayMetric(metric, relativeTo: target, insertAfter: direction > 0)
     }
 }

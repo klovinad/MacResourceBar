@@ -1,8 +1,8 @@
 # MacResourceBar
 
-Native macOS menu bar resource monitor for CPU, RAM, temperature, disk, external disk, network totals, and per-application activity.
+Native menu bar resource monitor for macOS 13 or later, on Apple silicon and Intel. Monitor CPU, memory, temperature, internal and external disks, network totals, and application activity.
 
-[Download the latest DMG](https://github.com/klovinad/MacResourceBar/releases/download/v1.1/MacResourceBar-1.1.dmg)
+[Download the latest published release](https://github.com/klovinad/MacResourceBar/releases/latest)
 
 ![MacResourceBar screenshot](Docs/macresourcebar-dashboard-2026-08-02.png)
 
@@ -10,14 +10,14 @@ MacResourceBar lives in your menu bar and opens a compact resource dashboard whe
 
 ## Install
 
-1. Download [`MacResourceBar-1.1.dmg`](https://github.com/klovinad/MacResourceBar/releases/download/v1.1/MacResourceBar-1.1.dmg).
+1. Download the current DMG from [GitHub Releases](https://github.com/klovinad/MacResourceBar/releases/latest).
 2. Open the DMG.
 3. Drag `MacResourceBar.app` into `Applications`.
 4. Launch it from `Applications`.
 
-The current public build is ad-hoc signed because no Apple Developer ID certificate is configured yet. macOS may show a Gatekeeper warning on first launch.
+The source tree targets **1.2 (build 7)**. The download link above points to the latest published version. Locally built DMGs are development artifacts; public DMGs require Developer ID signing and Apple notarization. See [the release process](RELEASE.md).
 
-## Current MVP
+## Features
 
 - Menu bar status item with selectable system metrics:
   - Network download/upload
@@ -27,11 +27,17 @@ The current public build is ad-hoc signed because no Apple Developer ID certific
   - CPU temperature when available
   - External disk activity when available
 - Left click opens the popover.
+- Two lines / Two lines compact / Two lines icons / Icons / Full / Compact / Mini can be selected directly in the popover header or Settings. The choice is saved between launches.
+- Two lines stacks adjacent metrics in fixed-width columns and keeps network download/upload together. Icons uses a single row with larger values and SF Symbols. All graphic styles preserve metric order, disk identity and unavailable states.
+- Two lines compact shortens rate units and column gaps. Two lines icons also replaces resource labels with symbols, retaining external disk names and network arrows. All three two-line styles right-align values in fixed-width columns; changing digits, units or `N/A` does not move neighbouring metrics. Short rate suffixes B / K / M / G / T mean bytes / KB / MB / GB / TB per second.
+- Full keeps descriptive labels; Compact uses shorter labels and rates. A narrow menu bar preserves the selected style and shows `+N` for values available in the panel, keeping network directions together.
+- The 1 / 10 second refresh control remains directly in the popover header.
 - Right click opens the context menu with launch-at-login, high refresh, show/hide, settings, and quit.
-- High refresh samples totals, system metrics, and per-app data roughly every second.
-- Low refresh slows total/system metrics and per-app monitoring to reduce overhead.
+- High refresh samples system totals and per-app CPU, memory, and disk activity every second. Per-app network snapshots run every 5 seconds after a short warm-up.
+- Low refresh uses 10-second intervals. Per-app monitoring stops when the popover closes. Temperature reads are limited to once every 5 seconds; disk inventory refreshes independently every 30 seconds and after mount changes.
 - Popover sparklines show recent network, CPU, RAM, and disk activity for the current app session.
-- Settings window exposes persistent launch, refresh, tray metric, table filter, sort, and threshold preferences.
+- The popover reuses its content between openings, suspends hidden updates, and creates application rows as they enter the viewport.
+- Settings exposes launch, refresh, network source, tray metrics, external disks, table filters, sorting, memory pressure, compressed memory, and swap usage.
 - Popover app table shows:
   - app icon/name
   - CPU
@@ -40,20 +46,22 @@ The current public build is ad-hoc signed because no Apple Developer ID certific
   - network down/up
 - Table controls:
   - filters: All, CPU, Memory, Disk, Network
-  - sort: Total, CPU, RAM, Disk, Network, Name
-  - per-filter threshold picker
+  - sort: Overall, CPU, Memory, Disk, Network, Name, Custom
+  - real-unit threshold picker for CPU, Memory, Disk, and Network
   - search by app name
   - Active only
   - Show helpers
-- Terminating an app row asks for confirmation before sending `SIGTERM`.
-- Helper grouping is best-effort. With Show helpers off, common Chrome, Electron, generic Helper, and WebKit/Safari helper rows are grouped under a parent app name where the process name makes that possible.
+- Terminating an app row asks for confirmation, revalidates the process start identity to prevent PID reuse, and reports the result.
+- Metrics can be reordered by dragging the full row, arrow keys, context menus, and accessibility actions.
+- Missing or warming-up metrics display `N/A` instead of a false zero, including unavailable members of an application group.
+- Helper grouping uses process ancestry and compatible bundle identities. Names alone never merge unrelated applications. Enable Show helpers to inspect individual processes.
 
 ## Data Sources
 
-- `NetworkTotalsMonitor`: public interface counters via `getifaddrs`.
-- `NetworkProcessMonitor`: launches `/usr/bin/nettop` and parses delta CSV output for best-effort per-process network activity.
-- `CPUProcessMonitor`: samples per-process CPU from `proc_pidinfo`.
-- `MemoryProcessMonitor`: samples resident memory from `proc_pidinfo`.
+- `NetworkTotalsMonitor`: 64-bit interface counters via `NET_RT_IFLIST2`, scoped to the primary interface by default to avoid double-counting VPN traffic.
+- `NetworkProcessMonitor`: takes bounded `/usr/bin/nettop` cumulative snapshots and validates CSV, process start identity, counter resets, and freshness. It never keeps a continuous nettop stream running.
+- `CPUProcessMonitor`: samples per-process CPU and start identity together from `proc_pid_rusage`, converting Mach ticks to elapsed CPU time.
+- `MemoryProcessMonitor`: samples physical footprint from `proc_pid_rusage`, with resident memory as a fallback.
 - `DiskProcessMonitor`: samples per-process disk I/O from `proc_pid_rusage`.
 - `AppResourceMonitor`: merges CPU/RAM/disk/network samples into `AppResourceSnapshot`.
 - `SystemMetricsMonitor`: samples CPU, memory, disk, CPU temperature, and external disk activity.
@@ -63,19 +71,18 @@ The current public build is ad-hoc signed because no Apple Developer ID certific
 
 ## Measurement Notes
 
-- Per-app CPU is normalized to `0...100%` of total machine capacity, matching the system CPU scale shown in the menu bar. It is not Activity Monitor's `cores * 100` process scale.
-- Total sort uses normalized activity points so RAM does not dominate CPU, disk, and network simply because memory is measured in large byte counts.
+- Per-app CPU follows Activity Monitor's process scale. One fully used logical core is 100%, so a multi-threaded process can exceed 100%. The system CPU metric remains a whole-machine value from 0% to 100%.
+- Overall sort is a convenience ranking across available resources. Minimum filtering always uses a selected metric with real units.
 - Memory thresholds are byte counts.
 - Disk and network thresholds are byte-per-second rates.
-- All threshold is activity points.
 
 ## Limitations
 
 - Per-app network attribution is best-effort because macOS does not expose a stable public API for live per-application network usage.
 - `nettop` output can vary by OS version and may omit, delay, or rename process rows.
-- The first `nettop` frame is discarded because it is a baseline, not an interval delta.
+- The first `nettop` snapshot establishes a baseline. Rates become available after the next snapshot; closing connections can reset its best-effort counters.
 - CPU/RAM/disk process APIs are sampled for currently visible running applications; daemons and background agents are not the main MVP target.
-- Helper grouping depends on process names and bundle metadata. It is intentionally heuristic.
+- Process ancestry can change, and inaccessible processes can make a grouped metric unavailable. Network attribution remains approximate, including traffic through a VPN.
 - CPU temperature is best-effort and may be unavailable on some Macs or macOS versions.
 - GPU monitoring is not part of the MVP.
 
@@ -87,7 +94,11 @@ From this directory:
 ./script/build_and_run.sh --verify
 ```
 
-The script builds the `NetworkMenuMonitor` Xcode scheme in Debug, launches `MacResourceBar.app`, and verifies that the process is running. The Codex app Run action is wired to the same script.
+Requires Xcode 16 or later. The script builds the `NetworkMenuMonitor` scheme first, asks existing MacResourceBar instances to quit normally, then launches and verifies the exact built bundle. It does not terminate processes by name. Use `--build-only` to build without touching the running app.
+
+Run the regression suite with `swift test`. It covers native CPU/memory reads, 64-bit network counters, resets, PID reuse, nettop failure, grouping, filters, preference reload, and sampling during slow disk discovery.
+
+For a read-only overhead measurement, pass the verified MacResourceBar PID to `swift script/measure_overhead.swift <pid> 30`. The output includes the app and its short-lived helper CPU usage. See [validation evidence](Docs/VALIDATION.md) for the latest local checks.
 
 ## Package DMG
 
@@ -97,13 +108,16 @@ To build a Release app bundle and compressed DMG:
 ./script/package_dmg.sh
 ```
 
-The script writes `Release/MacResourceBar-1.1.dmg` and a copied app bundle at `Release/MacResourceBar.app`. Public internet distribution will still need Developer ID signing and notarization to avoid Gatekeeper warnings.
+The script writes `Release/MacResourceBar-1.2-local.dmg`, its SHA-256 checksum, and a copied app bundle at `Release/MacResourceBar.app`. The `-local` suffix makes the ad-hoc artifact impossible to confuse with a publishable build. See [RELEASE.md](RELEASE.md) for the Developer ID and notarized public flow.
 
 ## Project Structure
 
 ```text
 Network app/
-├── .codex/environments/environment.toml
+├── .github/workflows/build.yml
+├── Package.swift
+├── Tests/MacResourceBarCoreTests/
+├── RELEASE.md
 ├── script/build_and_run.sh
 ├── script/package_dmg.sh
 ├── NetworkMenuMonitor.xcodeproj/
@@ -123,7 +137,8 @@ Network app/
 │   │   ├── NetworkTotalsMonitor.swift
 │   │   └── SystemMetricsMonitor.swift
 │   ├── Utilities/
-│   │   └── ByteRateFormatter.swift
+│   │   ├── ByteRateFormatter.swift
+│   │   └── MonitoringPolicy.swift
 │   ├── ViewModels/
 │   │   ├── AppSnapshotFilterState.swift
 │   │   ├── MenuBarPreferences.swift
@@ -136,7 +151,7 @@ Network app/
 
 ## Privacy
 
-The MVP reads local system counters and process metadata on the Mac. It does not send telemetry or snapshots anywhere.
+MacResourceBar reads local system counters and process metadata on the Mac. It does not send telemetry or snapshots anywhere.
 
 ## Security
 

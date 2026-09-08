@@ -1,7 +1,34 @@
 import AppKit
+import Combine
 import CoreTransferable
 import SwiftUI
 import UniformTypeIdentifiers
+
+@MainActor
+final class PopoverUpdateRelay: ObservableObject {
+    @Published private var revision = 0
+    var isActive = false {
+        didSet { if isActive { revision &+= 1 } }
+    }
+    private var subscription: AnyCancellable?
+
+    init(viewModel: MenuBarViewModel) {
+        subscription = viewModel.objectWillChange
+            .debounce(for: .milliseconds(16), scheduler: RunLoop.main)
+            .sink { [weak self] in
+                guard let self, self.isActive else { return }
+                self.revision &+= 1
+            }
+    }
+}
+
+private extension Color {
+    /// Keeps supporting text visually subordinate without dropping below
+    /// normal-text contrast on the app's light or dark surfaces.
+    static var accessibleSecondaryText: Color {
+        Color.primary.opacity(0.75)
+    }
+}
 
 private extension UTType {
     static let macResourceBarAppOrder = UTType(
@@ -94,7 +121,8 @@ private struct TrayMetricDropDelegate: DropDelegate {
 }
 
 struct MenuBarPopoverView: View {
-    @ObservedObject var viewModel: MenuBarViewModel
+    let viewModel: MenuBarViewModel
+    @ObservedObject var updates: PopoverUpdateRelay
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var draggedTrayMetric: MenuBarViewModel.TrayMetric?
@@ -103,6 +131,11 @@ struct MenuBarPopoverView: View {
     @State private var hoveredTrayMetric: MenuBarViewModel.TrayMetric?
     @State private var lockedAppOrder: [String]?
     @State private var isAppTableHovered = false
+    @State private var focusedAppControlKey: String?
+    @State private var compactMetricsExpanded = false
+    @FocusState private var focusedTrayMetric: MenuBarViewModel.TrayMetric?
+    @FocusState private var focusedExternalDiskID: String?
+    @FocusState private var focusedSortOrder: MenuBarViewModel.AppSortOrder?
 
     private let tableScrollbarReserve: CGFloat = 14
     private let sidebarWidth: CGFloat = 200
@@ -122,32 +155,83 @@ struct MenuBarPopoverView: View {
                     .ignoresSafeArea()
             }
 
-            VStack(alignment: .leading, spacing: 10) {
-                header
-
-                HStack(alignment: .top, spacing: 12) {
-                    sidebar
-                        .frame(width: sidebarWidth, alignment: .topLeading)
-                        .frame(maxHeight: .infinity, alignment: .topLeading)
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        appTableControls
-                        Divider()
-                        content
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            GeometryReader { geometry in
+                VStack(alignment: .leading, spacing: 10) {
+                    header
+                    mainLayout(
+                        isCompact: geometry.size.width < 840,
+                        availableWidth: max(geometry.size.width - 28, 0)
+                    )
                 }
-                .frame(maxHeight: .infinity, alignment: .top)
+                .padding(14)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .onDisappear {
             resetTrayMetricDragState()
             hoveredTrayMetric = nil
             isAppTableHovered = false
             lockedAppOrder = nil
+            focusedAppControlKey = nil
         }
+    }
+
+    @ViewBuilder
+    private func mainLayout(isCompact: Bool, availableWidth: CGFloat) -> some View {
+        if isCompact {
+            VStack(alignment: .leading, spacing: 8) {
+                DisclosureGroup(isExpanded: $compactMetricsExpanded) {
+                    sidebar
+                        .frame(maxHeight: 190, alignment: .topLeading)
+                        .padding(.top, 6)
+                } label: {
+                    HStack {
+                        Text("Menu bar metrics")
+                            .font(.callout.weight(.semibold))
+                        Spacer()
+                        Text(viewModel.selectedTrayMetricsSummary)
+                            .font(.caption)
+                            .foregroundStyle(Color.accessibleSecondaryText)
+                            .lineLimit(1)
+                    }
+                }
+                .accessibilityHint("Shows metric visibility and ordering controls")
+
+                compactAppContent(availableWidth: availableWidth)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else {
+            HStack(alignment: .top, spacing: 12) {
+                sidebar
+                    .frame(width: sidebarWidth, alignment: .topLeading)
+                    .frame(maxHeight: .infinity, alignment: .topLeading)
+
+                appContentColumn
+            }
+            .frame(maxHeight: .infinity, alignment: .top)
+        }
+    }
+
+    @ViewBuilder
+    private func compactAppContent(availableWidth: CGFloat) -> some View {
+        if availableWidth < 620 {
+            ScrollView(.horizontal, showsIndicators: true) {
+                appContentColumn
+                    .frame(width: 620, alignment: .topLeading)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            appContentColumn
+        }
+    }
+
+    private var appContentColumn: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            appTableControls
+            Divider()
+            content
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var header: some View {
@@ -167,52 +251,49 @@ struct MenuBarPopoverView: View {
 
                 HStack(spacing: 5) {
                     Circle()
-                        .fill(viewModel.visiblePerAppStatusMessage == nil ? Color.green : Color.orange)
+                        .fill(viewModel.monitoringHasIssue ? Color.orange : Color.green)
                         .frame(width: 6, height: 6)
-                    Text(viewModel.visiblePerAppStatusMessage == nil ? "Monitoring active" : "Some data unavailable")
+                    Text(viewModel.monitoringStatusSummary)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.accessibleSecondaryText)
                 }
+                .help(viewModel.monitoringIssueDetails)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(viewModel.monitoringStatusSummary)
+                .accessibilityValue(viewModel.monitoringIssueDetails)
             }
 
             Spacer(minLength: 0)
 
-            HStack(spacing: 6) {
-                Text("Labels")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Picker("Menu bar label style", selection: Binding(
-                    get: { viewModel.menuBarLabelStyle },
-                    set: { viewModel.setMenuBarLabelStyle($0) }
-                )) {
-                    ForEach(MenuBarViewModel.MenuBarLabelStyle.allCases) { style in
-                        Text(style.label).tag(style)
-                    }
+            Picker("Menu bar style", selection: Binding(
+                get: { viewModel.menuBarLabelStyle },
+                set: { viewModel.setMenuBarLabelStyle($0) }
+            )) {
+                ForEach(MenuBarViewModel.MenuBarLabelStyle.allCases) { style in
+                    Text(style.label).tag(style)
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 168)
-                .controlSize(.small)
             }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .controlSize(.small)
+            .frame(width: 164)
+            .help(viewModel.menuBarLabelStyle.helpText)
+            .accessibilityLabel("Menu bar style")
+            .onMoveCommand(perform: viewModel.moveMenuBarLabelStyle)
 
-            HStack(spacing: 6) {
-                Text("Update")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Picker("Update interval", selection: Binding(
-                    get: { viewModel.highRefreshEnabled },
-                    set: { viewModel.setHighRefreshEnabled($0) }
-                )) {
-                    Text("1s").tag(true)
-                    Text("10s").tag(false)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 94)
-                .controlSize(.small)
+            Picker("Refresh rate", selection: Binding(
+                get: { viewModel.highRefreshEnabled },
+                set: { viewModel.setHighRefreshEnabled($0) }
+            )) {
+                Text("1 s").tag(true)
+                Text("10 s").tag(false)
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
+            .frame(width: 100)
+            .help("Refresh system and application metrics every 1 or 10 seconds")
+            .accessibilityLabel("Refresh rate")
 
             Button {
                 NotificationCenter.default.post(name: .networkMenuMonitorOpenSettings, object: nil)
@@ -221,7 +302,7 @@ struct MenuBarPopoverView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .help("Settings")
+            .help("Menu bar labels, refresh rate and settings")
             .accessibilityLabel("Open settings")
         }
     }
@@ -250,7 +331,7 @@ struct MenuBarPopoverView: View {
             LazyVStack(alignment: .leading, spacing: 0) {
                 Text("MENU BAR METRICS")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.accessibleSecondaryText)
                     .padding(.horizontal, 10)
                     .padding(.bottom, 6)
 
@@ -292,7 +373,7 @@ struct MenuBarPopoverView: View {
                 if viewModel.availableExternalDiskActivities.isEmpty {
                     Text("No external disks connected")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.accessibleSecondaryText)
                         .padding(.leading, 26)
                         .padding(.trailing, 10)
                         .padding(.bottom, 7)
@@ -302,7 +383,6 @@ struct MenuBarPopoverView: View {
                     }
                 }
             }
-            .opacity(viewModel.trayMetricEnabled(.externalDisk) ? 1 : 0.42)
 
             Divider()
                 .padding(.leading, 22)
@@ -319,71 +399,73 @@ struct MenuBarPopoverView: View {
         handlesReordering: Bool = true
     ) -> some View {
         let isEnabled = viewModel.trayMetricEnabled(trayMetric)
+        let isRequired = isEnabled && viewModel.selectedTrayMetrics.count == 1
         let isHovered = hoveredTrayMetric == trayMetric
+        let isFocused = focusedTrayMetric == trayMetric
 
-        let row = HStack(alignment: .center, spacing: 0) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 7) {
-                    ZStack {
-                        Circle()
-                            .stroke(
-                                isEnabled ? color.opacity(0.24) : Color.secondary.opacity(0.55),
-                                lineWidth: 1
+        let row = Button {
+            viewModel.toggleTrayMetric(trayMetric)
+        } label: {
+            HStack(alignment: .center, spacing: 0) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 7) {
+                        Image(systemName: isEnabled ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(isEnabled ? color : Color.secondary)
+                            .frame(width: 13, height: 24)
+
+                        Text(label)
+                            .font(.callout)
+                            .foregroundStyle(isEnabled ? Color.primary : Color.accessibleSecondaryText)
+                            .lineLimit(1)
+
+                        Spacer(minLength: 4)
+
+                        Text(value)
+                            .font(.caption.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(isEnabled ? Color.primary : Color.accessibleSecondaryText)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.72)
+                    }
+
+                    Group {
+                        if samples.count > 1 {
+                            Sparkline(
+                                samples: samples,
+                                color: color,
+                                range: sparklineRange(for: trayMetric)
                             )
-                            .frame(width: 11, height: 11)
-                        Circle()
-                            .fill(isEnabled ? color : Color.clear)
-                            .frame(width: 7, height: 7)
+                        } else {
+                            Color.clear
+                        }
                     }
-                    .frame(width: 13, height: 24)
-
-                    Text(label)
-                        .font(.callout)
-                        .foregroundStyle(isEnabled ? Color.primary : Color.secondary)
-                        .lineLimit(1)
-
-                    Spacer(minLength: 4)
-
-                    Text(value)
-                        .font(.caption.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(isEnabled ? Color.primary : Color.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
+                    .frame(height: 10)
+                    .padding(.leading, 7)
+                    .accessibilityHidden(true)
                 }
+                .padding(.leading, 9)
+                .padding(.trailing, 4)
+                .padding(.vertical, 5)
+                .frame(maxWidth: .infinity, minHeight: 43, alignment: .leading)
 
-                Group {
-                    if samples.count > 1 {
-                        Sparkline(
-                            samples: samples,
-                            color: color,
-                            range: sparklineRange(for: trayMetric)
-                        )
-                    } else {
-                        Color.clear
-                    }
-                }
-                .frame(height: 10)
-                .padding(.leading, 7)
-                .accessibilityHidden(true)
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 43)
+                    .opacity(
+                        isHovered || isFocused || trayMetricDropPlacement?.targetMetric == trayMetric
+                            ? 0.78
+                            : 0.42
+                    )
+                    .accessibilityHidden(true)
             }
-            .padding(.leading, 9)
-            .padding(.trailing, 4)
-            .padding(.vertical, 5)
             .frame(maxWidth: .infinity, minHeight: 43, alignment: .leading)
-
-            Image(systemName: "line.3.horizontal")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 28, height: 43)
-                .opacity(
-                    isHovered || trayMetricDropPlacement?.targetMetric == trayMetric
-                        ? 0.78
-                        : 0.28
-                )
-                .accessibilityHidden(true)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .disabled(isRequired)
+        .focused($focusedTrayMetric, equals: trayMetric)
         .frame(maxWidth: .infinity, minHeight: 43, alignment: .leading)
-        .contentShape(Rectangle())
         .background(
             trayMetricDropPlacement?.targetMetric == trayMetric
                 ? Color.accentColor.opacity(0.13)
@@ -409,20 +491,59 @@ struct MenuBarPopoverView: View {
                 trayMetricDropIndicator
             }
         }
-        .onTapGesture {
-            viewModel.toggleTrayMetric(trayMetric)
+        .overlay {
+            if isFocused {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Color.accentColor, lineWidth: 2)
+                    .padding(2)
+                    .allowsHitTesting(false)
+            }
         }
         .help(
-            isEnabled && viewModel.selectedTrayMetrics.count == 1
-                ? "At least one metric must remain shown; drag to reorder"
-                : "Click to show or hide \(trayMetric.title); drag to reorder"
+            isRequired
+                ? "At least one metric must remain shown. Drag or use the menu to reorder."
+                : "Show or hide \(trayMetric.title). Drag or use the menu to reorder."
         )
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(trayMetric.title) in menu bar")
-        .accessibilityValue("\(value), \(isEnabled ? "shown" : "hidden")")
-        .accessibilityAddTraits(.isButton)
-        .accessibilityAction {
-            viewModel.toggleTrayMetric(trayMetric)
+        .accessibilityValue("\(value), \(isEnabled ? (isRequired ? "shown and required" : "shown") : "hidden")")
+        .accessibilityHint(
+            isRequired
+                ? "At least one metric must remain shown. Use another metric or its menu to change the order."
+                : "Press to show or hide. Use accessibility actions to change its position."
+        )
+        .accessibilityActions {
+            if canMoveTrayMetric(trayMetric, direction: -1) {
+                Button("Move up") {
+                    moveTrayMetric(trayMetric, direction: -1)
+                }
+            }
+            if canMoveTrayMetric(trayMetric, direction: 1) {
+                Button("Move down") {
+                    moveTrayMetric(trayMetric, direction: 1)
+                }
+            }
+        }
+        .onMoveCommand { direction in
+            switch direction {
+            case .up:
+                moveTrayMetric(trayMetric, direction: -1)
+            case .down:
+                moveTrayMetric(trayMetric, direction: 1)
+            default:
+                break
+            }
+        }
+        .contextMenu {
+            Button("Move Up") {
+                moveTrayMetric(trayMetric, direction: -1)
+            }
+            .disabled(!canMoveTrayMetric(trayMetric, direction: -1))
+
+            Button("Move Down") {
+                moveTrayMetric(trayMetric, direction: 1)
+            }
+            .disabled(!canMoveTrayMetric(trayMetric, direction: 1))
         }
 
         return trayMetricReorderable(
@@ -500,6 +621,29 @@ struct MenuBarPopoverView: View {
         trayMetricDropPlacement = nil
     }
 
+    private func canMoveTrayMetric(
+        _ metric: MenuBarViewModel.TrayMetric,
+        direction: Int
+    ) -> Bool {
+        guard let index = viewModel.trayMetricOrder.firstIndex(of: metric) else { return false }
+        return viewModel.trayMetricOrder.indices.contains(index + direction)
+    }
+
+    private func moveTrayMetric(
+        _ metric: MenuBarViewModel.TrayMetric,
+        direction: Int
+    ) {
+        guard
+            let index = viewModel.trayMetricOrder.firstIndex(of: metric),
+            viewModel.trayMetricOrder.indices.contains(index + direction)
+        else {
+            return
+        }
+
+        let target = viewModel.trayMetricOrder[index + direction]
+        viewModel.moveTrayMetric(metric, relativeTo: target, insertAfter: direction > 0)
+    }
+
     private var trayMetricDropIndicator: some View {
         Capsule(style: .continuous)
             .fill(Color.accentColor)
@@ -531,25 +675,36 @@ struct MenuBarPopoverView: View {
 
                 Text(externalDiskChipTitle(disk))
                     .font(.caption)
-                    .foregroundStyle(isSelected ? Color.secondary : Color.secondary.opacity(0.62))
+                    .foregroundStyle(isSelected ? Color.primary : Color.accessibleSecondaryText)
                     .lineLimit(1)
+                    .layoutPriority(1)
 
-                Spacer(minLength: 4)
+                Spacer(minLength: 0)
 
                 Text(viewModel.externalDiskRateText(for: disk))
                     .font(.caption.weight(.medium).monospacedDigit())
-                    .foregroundStyle(isSelected ? Color.primary : Color.secondary.opacity(0.62))
+                    .foregroundStyle(isSelected ? Color.primary : Color.accessibleSecondaryText)
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
+                    .fixedSize(horizontal: true, vertical: false)
             }
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .focused($focusedExternalDiskID, equals: disk.id)
         .padding(.leading, 25)
-        .padding(.trailing, 30)
+        .padding(.trailing, 10)
         .frame(maxWidth: .infinity, minHeight: 27)
-        .help("Click to \(isSelected ? "hide" : "show") \(externalDiskChipTitle(disk)) in the menu bar")
+        .overlay {
+            if focusedExternalDiskID == disk.id {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .stroke(Color.accentColor, lineWidth: 2)
+                    .padding(.horizontal, 22)
+                    .allowsHitTesting(false)
+            }
+        }
+        .help("\(isSelected ? "Hide" : "Show") \(externalDiskChipTitle(disk)) in the menu bar")
         .accessibilityLabel("\(externalDiskChipTitle(disk)) in menu bar")
         .accessibilityValue("\(viewModel.externalDiskRateText(for: disk)), \(isSelected ? "shown" : "hidden")")
     }
@@ -561,17 +716,30 @@ struct MenuBarPopoverView: View {
     private var appTableControls: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
-                TextField("Search applications", text: Binding(
-                    get: { viewModel.appSearchText },
-                    set: { viewModel.setAppSearchText($0) }
-                ))
+                TextField(
+                    "",
+                    text: Binding(
+                        get: { viewModel.appSearchText },
+                        set: { viewModel.setAppSearchText($0) }
+                    )
+                )
                 .textFieldStyle(.roundedBorder)
                 .frame(minWidth: 180)
+                .overlay(alignment: .leading) {
+                    if viewModel.appSearchText.isEmpty {
+                        Text("Search applications")
+                            .foregroundStyle(Color.accessibleSecondaryText)
+                            .padding(.leading, 7)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
+                }
+                .accessibilityLabel("Search applications")
 
                 HStack(spacing: 5) {
                     Text("Show")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.accessibleSecondaryText)
 
                     Picker("Applications", selection: Binding(
                         get: { viewModel.activeAppsOnly },
@@ -613,7 +781,9 @@ struct MenuBarPopoverView: View {
             HStack(spacing: 12) {
                 resourceFilterControl
                 sortControl
-                thresholdControl
+                if viewModel.appResourceFilter != .all {
+                    thresholdControl
+                }
                 Spacer(minLength: 0)
             }
         }
@@ -624,7 +794,7 @@ struct MenuBarPopoverView: View {
         HStack(spacing: 5) {
             Text("Metric")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.accessibleSecondaryText)
 
             Picker("Metric", selection: Binding(
                 get: { viewModel.appResourceFilter },
@@ -644,7 +814,7 @@ struct MenuBarPopoverView: View {
         HStack(spacing: 5) {
             Text("Sort")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.accessibleSecondaryText)
 
             Picker("Sort", selection: Binding(
                 get: { viewModel.appSortOrder },
@@ -665,7 +835,7 @@ struct MenuBarPopoverView: View {
         HStack(spacing: 5) {
             Text("Minimum")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.accessibleSecondaryText)
 
             Picker("Minimum", selection: Binding(
                 get: { viewModel.appDisplayThresholdBytesPerSecond },
@@ -705,19 +875,26 @@ struct MenuBarPopoverView: View {
             appResourceTableHeader(visibleCount: snapshots.count, totalCount: totalCount)
 
             if let message = viewModel.visiblePerAppStatusMessage {
-                Label(message, systemImage: "exclamationmark.triangle.fill")
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .accessibilityHidden(true)
+                    Text(message)
+                        .foregroundStyle(.primary)
+                }
                     .font(.caption)
-                    .foregroundStyle(.orange)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 7)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: 7))
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Process monitoring warning: \(message)")
             }
 
             if !viewModel.appSnapshots.isEmpty, !viewModel.appSnapshotsAreFresh {
                 Label("Refreshing process data…", systemImage: "arrow.clockwise")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.accessibleSecondaryText)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 6)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -737,15 +914,9 @@ struct MenuBarPopoverView: View {
             } else {
                 ScrollViewReader { proxy in
                     ScrollView(.vertical) {
-                        LazyVStack(alignment: .leading, spacing: 0) {
-                            Color.clear
-                                .frame(height: 1)
-                                .id(appListTopAnchorID)
-
-                            appResourceList(snapshots)
-                                .padding(.trailing, tableScrollbarReserve)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        appResourceList(snapshots)
+                            .padding(.trailing, tableScrollbarReserve)
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .onAppear {
@@ -754,7 +925,8 @@ struct MenuBarPopoverView: View {
                         }
                     }
                     .onChange(of: tableScrollResetID) { _ in
-                        lockedAppOrder = isAppTableHovered && viewModel.appSortOrder != .custom
+                        lockedAppOrder = (isAppTableHovered || focusedAppControlKey != nil)
+                            && viewModel.appSortOrder != .custom
                             ? liveSnapshots.map(\.orderKey)
                             : nil
                         DispatchQueue.main.async {
@@ -765,7 +937,7 @@ struct MenuBarPopoverView: View {
                         isAppTableHovered = hovering
                         if hovering, viewModel.appSortOrder != .custom {
                             lockedAppOrder = lockedAppOrder ?? liveSnapshots.map(\.orderKey)
-                        } else {
+                        } else if focusedAppControlKey == nil {
                             lockedAppOrder = nil
                         }
                     }
@@ -847,12 +1019,41 @@ struct MenuBarPopoverView: View {
     private func appResourceList(_ snapshots: [AppResourceSnapshot]) -> some View {
         let isReordering = viewModel.appSortOrder == .custom
 
-        return VStack(alignment: .leading, spacing: 0) {
-            ForEach(snapshots) { snapshot in
+        // Only build rows in and near the viewport. Hundreds of off-screen
+        // rows otherwise relayout on every sample and delay opening the panel.
+        return LazyVStack(alignment: .leading, spacing: 0) {
+            Color.clear
+                .frame(height: 1)
+                .id(appListTopAnchorID)
+
+            ForEach(Array(snapshots.enumerated()), id: \.element.id) { index, snapshot in
                 AppResourceRow(
                     snapshot: snapshot,
                     showsDragHandle: isReordering,
-                    allowsTermination: viewModel.appSnapshotsAreFresh
+                    allowsTermination: viewModel.appSnapshotsAreFresh,
+                    canMoveUp: isReordering && index > snapshots.startIndex,
+                    canMoveDown: isReordering && index < snapshots.index(before: snapshots.endIndex),
+                    moveUp: {
+                        guard index > snapshots.startIndex else { return }
+                        viewModel.moveApp(
+                            withKey: snapshot.orderKey,
+                            relativeTo: snapshots[snapshots.index(before: index)].orderKey
+                        )
+                    },
+                    moveDown: {
+                        guard index < snapshots.index(before: snapshots.endIndex) else { return }
+                        viewModel.moveApp(
+                            withKey: snapshot.orderKey,
+                            relativeTo: snapshots[snapshots.index(after: index)].orderKey
+                        )
+                    },
+                    interactionFocusChanged: { focused in
+                        updateAppControlFocus(
+                            snapshot.orderKey,
+                            focused: focused,
+                            visibleOrder: snapshots.map(\.orderKey)
+                        )
+                    }
                 ) {
                     confirmTermination(of: snapshot)
                 }
@@ -893,7 +1094,7 @@ struct MenuBarPopoverView: View {
                     Text("Drop here to move to the end")
                 }
                 .font(.caption)
-                .foregroundStyle(draggedAppKey == appListEndTargetID ? Color.accentColor : Color.secondary)
+                .foregroundStyle(draggedAppKey == appListEndTargetID ? Color.accentColor : Color.accessibleSecondaryText)
                 .frame(maxWidth: .infinity)
                 .frame(height: 26)
                 .background(
@@ -928,6 +1129,24 @@ struct MenuBarPopoverView: View {
         "app-list-end-drop-target"
     }
 
+    private func updateAppControlFocus(
+        _ key: String,
+        focused: Bool,
+        visibleOrder: [String]
+    ) {
+        if focused {
+            focusedAppControlKey = key
+            if viewModel.appSortOrder != .custom {
+                lockedAppOrder = lockedAppOrder ?? visibleOrder
+            }
+        } else if focusedAppControlKey == key {
+            focusedAppControlKey = nil
+            if !isAppTableHovered {
+                lockedAppOrder = nil
+            }
+        }
+    }
+
     private var emptyAppTableMessage: String {
         hasActiveAppFilters
             ? "No applications match the current filters."
@@ -943,7 +1162,7 @@ struct MenuBarPopoverView: View {
 
             Text(title)
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.accessibleSecondaryText)
                 .multilineTextAlignment(.center)
 
             if hasActiveAppFilters, !viewModel.appSnapshots.isEmpty {
@@ -992,11 +1211,22 @@ struct MenuBarPopoverView: View {
                 }
             }
             .font(.caption.weight(isActive ? .semibold : .regular))
-            .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
+            .foregroundStyle(isActive ? Color.accentColor : Color.accessibleSecondaryText)
         }
         .buttonStyle(.plain)
+        .focused($focusedSortOrder, equals: sortOrder)
         .frame(width: width, alignment: alignment)
-        .accessibilityLabel("Sort by \(title)")
+        .overlay {
+            if focusedSortOrder == sortOrder {
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .stroke(Color.accentColor, lineWidth: 2)
+                    .padding(.horizontal, -3)
+                    .allowsHitTesting(false)
+            }
+        }
+        .accessibilityLabel(
+            sortOrder == .name ? "Sort by application name" : "Sort by \(title)"
+        )
         .accessibilityValue(
             isActive
                 ? (sortOrder == .name ? "Selected, ascending" : "Selected, descending")
@@ -1031,7 +1261,7 @@ struct MenuBarPopoverView: View {
     private func metricValue(for metric: MenuBarViewModel.TrayMetric) -> String {
         switch metric {
         case .network:
-            ByteRateFormatter.networkCardRate(
+            viewModel.networkTotalsLastUpdatedAt == nil ? "N/A" : ByteRateFormatter.networkCardRate(
                 for: viewModel.totalDownloadBytesPerSecond + viewModel.totalUploadBytesPerSecond
             )
         case .cpu:
@@ -1044,17 +1274,6 @@ struct MenuBarPopoverView: View {
             viewModel.formattedDiskActivity
         case .externalDisk:
             viewModel.formattedExternalDiskActivity
-        }
-    }
-
-    private func metricSymbol(for metric: MenuBarViewModel.TrayMetric) -> String {
-        switch metric {
-        case .network: "arrow.up.arrow.down"
-        case .cpu: "cpu"
-        case .cpuTemp: "thermometer.medium"
-        case .memory: "memorychip"
-        case .disk: "internaldrive"
-        case .externalDisk: "externaldrive"
         }
     }
 
@@ -1107,12 +1326,12 @@ struct MenuBarPopoverView: View {
         guard viewModel.appSnapshotsAreFresh else { return }
         let alert = NSAlert()
         alert.messageText = "Terminate \(snapshot.displayName)?"
-        alert.informativeText = snapshot.pids.count == 1
-            ? "This sends SIGTERM to PID \(snapshot.pids[0])."
-            : "This sends SIGTERM to \(snapshot.pids.count) related processes."
+        alert.informativeText = "Unsaved work or active transfers in this application may be interrupted."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Terminate")
         alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.keyEquivalent = ""
+        alert.buttons.last?.keyEquivalent = "\r"
 
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         viewModel.terminateProcess(snapshot)
@@ -1123,6 +1342,11 @@ private struct AppResourceRow: View {
     let snapshot: AppResourceSnapshot
     let showsDragHandle: Bool
     let allowsTermination: Bool
+    let canMoveUp: Bool
+    let canMoveDown: Bool
+    let moveUp: () -> Void
+    let moveDown: () -> Void
+    let interactionFocusChanged: (Bool) -> Void
     let terminate: () -> Void
     @State private var isHovered = false
     @FocusState private var isTerminateFocused: Bool
@@ -1153,52 +1377,7 @@ private struct AppResourceRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
-            HStack(alignment: .center, spacing: 8) {
-                if showsDragHandle {
-                    Image(systemName: "line.3.horizontal")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 14, height: 28)
-                        .contentShape(Rectangle())
-                        .draggable(AppOrderDragItem(key: snapshot.orderKey)) {
-                            Label(snapshot.displayName, systemImage: "line.3.horizontal")
-                                .font(.caption)
-                                .padding(.vertical, 7)
-                                .padding(.horizontal, 10)
-                                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        }
-                        .help("Drag to reorder")
-                        .accessibilityLabel("Reorder \(snapshot.displayName)")
-                }
-
-                Image(nsImage: snapshot.icon ?? NSWorkspace.shared.icon(for: .application))
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 22, height: 22)
-                    .cornerRadius(5)
-                    .accessibilityHidden(true)
-
-                Text(snapshot.displayName)
-                    .font(.callout.weight(.medium))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(snapshot.displayName)
-                    .layoutPriority(1)
-                    .accessibilityLabel("Application")
-                    .accessibilityValue(snapshot.displayName)
-
-                if snapshot.childProcessCount > 1 {
-                    Text("\(snapshot.childProcessCount)")
-                        .font(.caption2.monospacedDigit())
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Color.secondary.opacity(0.14), in: Capsule())
-                        .accessibilityLabel("\(snapshot.childProcessCount) related processes")
-                }
-            }
+            applicationCell
             .frame(width: Self.columnWidths.application, alignment: .leading)
 
             Text(cpuText)
@@ -1206,7 +1385,8 @@ private struct AppResourceRow: View {
                 .lineLimit(1)
                 .frame(width: Self.columnWidths.cpu, alignment: .trailing)
                 .accessibilityLabel("CPU")
-                .accessibilityValue(cpuText == "—" ? "No activity" : cpuText)
+                .accessibilityValue(cpuText == "N/A" ? "Unavailable or warming up" : cpuText == "–" ? "No activity" : cpuText)
+                .help("CPU usage; one fully used core is 100%. N/A means unavailable or warming up.")
 
             Text(memoryText)
                 .font(.caption.weight(.medium).monospacedDigit())
@@ -1214,16 +1394,16 @@ private struct AppResourceRow: View {
                 .minimumScaleFactor(0.75)
                 .frame(width: Self.columnWidths.ram, alignment: .trailing)
                 .accessibilityLabel("Memory")
-                .accessibilityValue(memoryText == "—" ? "No memory reported" : memoryText)
+                .accessibilityValue(memoryText == "N/A" ? "Unavailable" : memoryText == "–" ? "Zero bytes reported" : memoryText)
 
-            Text(Self.rateText(snapshot.diskBytesPerSecond))
+            Text(snapshot.availableMetrics.contains(.disk) ? Self.rateText(snapshot.diskBytesPerSecond) : "N/A")
                 .font(.caption.weight(.medium).monospacedDigit())
                 .lineLimit(1)
                 .minimumScaleFactor(0.78)
                 .frame(width: Self.columnWidths.disk, alignment: .trailing)
                 .accessibilityLabel("Disk")
                 .accessibilityValue(
-                    snapshot.diskBytesPerSecond < 0.5
+                    !snapshot.availableMetrics.contains(.disk) ? "Unavailable or warming up" : snapshot.diskBytesPerSecond < 0.5
                         ? "No activity"
                         : ByteRateFormatter.string(for: snapshot.diskBytesPerSecond)
                 )
@@ -1231,38 +1411,61 @@ private struct AppResourceRow: View {
             networkCell
                 .frame(width: Self.columnWidths.network, alignment: .trailing)
 
-            Button {
-                terminate()
-            } label: {
-                Image(systemName: "stop.circle")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(
-                        canTerminate && (isHovered || isTerminateFocused)
-                            ? Color.red
-                            : Color.secondary
-                    )
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
+            Group {
+                if canTerminate {
+                    Button {
+                        terminate()
+                    } label: {
+                        Image(systemName: "stop.circle")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(
+                                isHovered || isTerminateFocused
+                                    ? Color.red
+                                    : Color.secondary
+                            )
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .focused($isTerminateFocused)
+                    .opacity((isHovered || isTerminateFocused) ? 1 : 0.72)
+                    .help("Terminate \(snapshot.displayName)")
+                    .overlay {
+                        if isTerminateFocused {
+                            Circle()
+                                .stroke(Color.accentColor, lineWidth: 2)
+                                .frame(width: 24, height: 24)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .accessibilityLabel("Terminate \(snapshot.displayName)")
+                } else {
+                    Color.clear
+                        .frame(width: 24, height: 24)
+                        .accessibilityHidden(true)
+                }
             }
-            .buttonStyle(.plain)
-            .disabled(!canTerminate)
-            .focused($isTerminateFocused)
-            .opacity(
-                canTerminate
-                    ? ((isHovered || isTerminateFocused) ? 1 : 0.36)
-                    : 0
-            )
-            .help(
-                !allowsTermination
-                    ? "Process data is refreshing"
-                    : (snapshot.canTerminate ? "Terminate \(snapshot.displayName)" : "No process PID available")
-            )
             .frame(width: Self.columnWidths.kill, alignment: .trailing)
-            .accessibilityLabel("Terminate \(snapshot.displayName)")
         }
         .frame(maxWidth: .infinity)
         .onHover { isHovered = $0 }
+        .onChange(of: isTerminateFocused) { focused in
+            interactionFocusChanged(focused)
+        }
+        .onDisappear {
+            if isTerminateFocused {
+                interactionFocusChanged(false)
+            }
+        }
         .contextMenu {
+            if showsDragHandle {
+                Button("Move Up", action: moveUp)
+                    .disabled(!canMoveUp)
+                Button("Move Down", action: moveDown)
+                    .disabled(!canMoveDown)
+                Divider()
+            }
+
             Button("Terminate \(snapshot.displayName)…", role: .destructive) {
                 terminate()
             }
@@ -1270,24 +1473,104 @@ private struct AppResourceRow: View {
         }
     }
 
+    @ViewBuilder
+    private var applicationCell: some View {
+        if showsDragHandle {
+            applicationCellContent
+                .contentShape(Rectangle())
+                .draggable(AppOrderDragItem(key: snapshot.orderKey)) {
+                    Label(snapshot.displayName, systemImage: "line.3.horizontal")
+                        .font(.caption)
+                        .padding(.vertical, 7)
+                        .padding(.horizontal, 10)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .help("Drag the application row to reorder, or press the handle for move commands")
+        } else {
+            applicationCellContent
+        }
+    }
+
+    private var applicationCellContent: some View {
+        HStack(alignment: .center, spacing: 8) {
+            if showsDragHandle {
+                Menu {
+                    Button("Move Up", action: moveUp)
+                        .disabled(!canMoveUp)
+                    Button("Move Down", action: moveDown)
+                        .disabled(!canMoveDown)
+                } label: {
+                    Image(systemName: "line.3.horizontal")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 14, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .frame(width: 14, height: 28)
+                .contentShape(Rectangle())
+                .help("Move \(snapshot.displayName)")
+                .accessibilityLabel("Reorder \(snapshot.displayName)")
+                .accessibilityHint("Press to move up or down. You can also drag the application row.")
+            }
+
+            Image(nsImage: snapshot.icon ?? NSWorkspace.shared.icon(for: .application))
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 22, height: 22)
+                .cornerRadius(5)
+                .accessibilityHidden(true)
+
+            Text(snapshot.displayName)
+                .font(.callout.weight(.medium))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(snapshot.displayName)
+                .layoutPriority(1)
+                .accessibilityLabel("Application")
+                .accessibilityValue(snapshot.displayName)
+
+            if snapshot.childProcessCount > 1 {
+                Text("\(snapshot.childProcessCount)")
+                    .font(.caption2.monospacedDigit())
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .foregroundStyle(Color.accessibleSecondaryText)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Color.secondary.opacity(0.14), in: Capsule())
+                    .accessibilityLabel("\(snapshot.childProcessCount) related processes")
+            }
+        }
+    }
+
     private var cpuText: String {
-        snapshot.cpuUsagePercent < 0.05
-            ? "—"
+        guard snapshot.availableMetrics.contains(.cpu) else { return "N/A" }
+        return snapshot.cpuUsagePercent < 0.05
+            ? "–"
             : String(format: "%.1f%%", snapshot.cpuUsagePercent)
     }
 
     private var memoryText: String {
-        snapshot.ramBytes == 0
-            ? "—"
+        guard snapshot.availableMetrics.contains(.memory) else { return "N/A" }
+        return snapshot.ramBytes == 0
+            ? "–"
             : Self.byteFormatter.string(fromByteCount: Int64(snapshot.ramBytes))
     }
 
     @ViewBuilder
     private var networkCell: some View {
-        if snapshot.networkBytesPerSecond < 0.5 {
-            Text("—")
+        if !snapshot.availableMetrics.contains(.network) {
+            Text("N/A")
                 .font(.caption.weight(.medium).monospacedDigit())
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.accessibleSecondaryText)
+                .accessibilityLabel("Network")
+                .accessibilityValue("Unavailable or warming up")
+        } else if snapshot.networkBytesPerSecond < 0.5 {
+            Text("–")
+                .font(.caption.weight(.medium).monospacedDigit())
+                .foregroundStyle(Color.accessibleSecondaryText)
                 .accessibilityLabel("Network")
                 .accessibilityValue("No activity")
         } else {
@@ -1311,7 +1594,7 @@ private struct AppResourceRow: View {
     }
 
     private static func rateText(_ bytesPerSecond: Double) -> String {
-        bytesPerSecond < 0.5 ? "—" : ByteRateFormatter.string(for: bytesPerSecond)
+        bytesPerSecond < 0.5 ? "–" : ByteRateFormatter.string(for: bytesPerSecond)
     }
 }
 
