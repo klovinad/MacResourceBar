@@ -1,12 +1,12 @@
 # MacResourceBar
 
-Native menu bar resource monitor for macOS 13 or later, on Apple silicon and Intel. Monitor CPU, memory, temperature, internal and external disks, network totals, and application activity.
+Native menu bar resource monitor for macOS 13 or later, on Apple silicon and Intel. Keep CPU, memory, temperature, disk and network activity in view, then open the dashboard to see which applications are using those resources.
 
-[Download the latest published release](https://github.com/klovinad/MacResourceBar/releases/latest)
+[Download v1.1](https://github.com/klovinad/MacResourceBar/releases/tag/v1.1) · [Build the current source](#build-and-run)
 
-![MacResourceBar screenshot](Docs/macresourcebar-dashboard-2026-08-02.png)
+![MacResourceBar dashboard with system metrics, per-application usage, filters and sorting](Docs/macresourcebar-dashboard.png)
 
-MacResourceBar lives in your menu bar and opens a compact resource dashboard when you click it. It is built for quickly spotting what is using CPU, memory, disk, and network without opening Activity Monitor.
+Screenshots show **1.2 (build 7)**, now on `main`. The published installer is still **v1.1**; the new layouts are available when building the current source.
 
 ## Install
 
@@ -27,9 +27,7 @@ The source tree targets **1.2 (build 7)**. The download link above points to the
   - CPU temperature when available
   - External disk activity when available
 - Left click opens the popover.
-- Two lines / Two lines compact / Two lines icons / Icons / Full / Compact / Mini can be selected directly in the popover header or Settings. The choice is saved between launches.
-- Two lines stacks adjacent metrics in fixed-width columns and keeps network download/upload together. Icons uses a single row with larger values and SF Symbols. All graphic styles preserve metric order, disk identity and unavailable states.
-- Two lines compact shortens rate units and column gaps. Two lines icons also replaces resource labels with symbols, retaining external disk names and network arrows. All three two-line styles right-align values in fixed-width columns; changing digits, units or `N/A` does not move neighbouring metrics. Short rate suffixes B / K / M / G / T mean bytes / KB / MB / GB / TB per second.
+- Seven saved menu-bar styles, including three two-line layouts with fixed value columns. See [Menu Bar Styles](#menu-bar-styles) for actual screenshots and differences.
 - Full keeps descriptive labels; Compact uses shorter labels and rates. A narrow menu bar preserves the selected style and shows `+N` for values available in the panel, keeping network directions together.
 - The 1 / 10 second refresh control remains directly in the popover header.
 - Right click opens the context menu with launch-at-login, high refresh, show/hide, settings, and quit.
@@ -55,6 +53,20 @@ The source tree targets **1.2 (build 7)**. The download link above points to the
 - Metrics can be reordered by dragging the full row, arrow keys, context menus, and accessibility actions.
 - Missing or warming-up metrics display `N/A` instead of a false zero, including unavailable members of an application group.
 - Helper grouping uses process ancestry and compatible bundle identities. Names alone never merge unrelated applications. Enable Show helpers to inspect individual processes.
+
+## Menu Bar Styles
+
+Choose a style in the dashboard header or **Settings → Menu Bar**. The choice survives a relaunch. The three two-line layouts keep every selected value in fixed-width columns, including each external disk and both network directions.
+
+| Style | Actual menu bar | Details |
+| --- | --- | --- |
+| **Two lines** | ![Two lines with text labels and full rate units](Docs/tray-two-lines.png) | Text labels and explicit rate units. |
+| **Two lines compact** | ![Two lines compact with short rate units](Docs/tray-two-lines-compact.png) | The same values with short units and closer columns. |
+| **Two lines icons** | ![Two lines icons retaining disk labels and network arrows](Docs/tray-two-lines-icons.png) | Resource icons with disk labels and network arrows retained. |
+
+**Icons**, **Full**, **Compact** and **Mini** provide single-row alternatives. On a narrow menu bar, `+N` points to additional values in the dashboard without changing the selected style. Short rate suffixes B / K / M / G / T mean bytes / KB / MB / GB / TB per second.
+
+![Menu Bar settings with the selected style, live preview and metric selection](Docs/macresourcebar-settings.png)
 
 ## Data Sources
 
