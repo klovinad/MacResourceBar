@@ -15,7 +15,12 @@ struct MenuBarGraphicEntry: Equatable {
 /// accessibility behavior. The preview uses the same measured columns.
 @MainActor
 enum MenuBarGraphicRenderer {
-    enum Style { case twoLines, icons }
+    enum Style {
+        case twoLines, twoLinesCompact, twoLinesIcons, icons
+
+        var isTwoLines: Bool { self != .icons }
+        var columnGap: CGFloat { self == .twoLinesCompact || self == .twoLinesIcons ? 6 : 10 }
+    }
 
     struct Column: Equatable {
         let entries: [MenuBarGraphicEntry]
@@ -36,7 +41,7 @@ enum MenuBarGraphicRenderer {
         for entry in entries {
             if let last = groups.last, last.count == 1,
                (entry.pairID != nil && last[0].pairID == entry.pairID)
-                || (style == .twoLines && entry.pairID == nil && last[0].pairID == nil) {
+                || (style.isTwoLines && entry.pairID == nil && last[0].pairID == nil) {
                 groups[groups.count - 1].append(entry)
             } else {
                 groups.append([entry])
@@ -78,11 +83,15 @@ enum MenuBarGraphicRenderer {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         let font = font(for: layout.style)
         for column in layout.columns {
-            if layout.style == .twoLines {
+            if layout.style.isTwoLines {
                 for (index, entry) in column.entries.enumerated() {
                     let rowY: CGFloat = column.entries.count == 1 ? 5.5 : (index == 0 ? 11 : 0)
-                    draw(entry.label, font: font, x: column.x, rowY: rowY, rowHeight: 11, context: context, color: color)
-                    let valueX = column.x + column.labelWidth + (column.labelWidth > 0 ? 3 : 0)
+                    if let symbol = twoLineSymbol(for: entry, style: layout.style, color: color) {
+                        draw(symbol, in: NSRect(x: column.x, y: rowY + 0.5, width: column.labelWidth, height: 10))
+                    } else {
+                        draw(entry.label, font: font, x: column.x, rowY: rowY, rowHeight: 11, context: context, color: color)
+                    }
+                    let valueX = column.x + column.width - textWidth(entry.value, font: font)
                     draw(entry.value, font: font, x: valueX, rowY: rowY, rowHeight: 11, context: context, color: color)
                 }
             } else {
@@ -93,10 +102,7 @@ enum MenuBarGraphicRenderer {
                         if let symbol = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
                             .withSymbolConfiguration(.init(pointSize: 12, weight: .medium)
                             .applying(.init(paletteColors: [color]))) {
-                            let scale = min(box.width / symbol.size.width, box.height / symbol.size.height)
-                            let size = NSSize(width: symbol.size.width * scale, height: symbol.size.height * scale)
-                            symbol.draw(in: NSRect(x: box.midX - size.width / 2, y: box.midY - size.height / 2,
-                                                   width: size.width, height: size.height))
+                            draw(symbol, in: box)
                         } else {
                             draw(entry.label, font: font, x: x, rowY: 0, rowHeight: 22, context: context, color: color)
                         }
@@ -116,10 +122,12 @@ enum MenuBarGraphicRenderer {
         let columns = groups.map { entries -> Column in
             let labelWidth: CGFloat
             let width: CGFloat
-            if style == .twoLines {
-                labelWidth = entries.map { textWidth($0.label, font: font) }.max() ?? 0
+            if style.isTwoLines {
+                labelWidth = entries.map {
+                    twoLineSymbol(for: $0, style: style, color: .black) == nil ? textWidth($0.label, font: font) : 11
+                }.max() ?? 0
                 width = labelWidth + (labelWidth > 0 ? 3 : 0)
-                    + (entries.map { valueWidth(for: $0, font: font) }.max() ?? 0)
+                    + (entries.map { valueWidth(for: $0, font: font, fixed: true) }.max() ?? 0)
             } else {
                 labelWidth = 0
                 width = entries.reduce(0) { result, entry in
@@ -128,15 +136,30 @@ enum MenuBarGraphicRenderer {
                 } + CGFloat(max(0, entries.count - 1)) * 6
             }
             let column = Column(entries: entries, x: x, width: ceil(width), labelWidth: labelWidth)
-            x += ceil(width) + 10
+            x += ceil(width) + style.columnGap
             return column
         }
         return Layout(style: style, columns: columns,
-                      size: NSSize(width: max(22, x - 10 + 2), height: 22), hiddenCount: hiddenCount)
+                      size: NSSize(width: max(22, x - style.columnGap + 2), height: 22), hiddenCount: hiddenCount)
     }
 
     private static func font(for style: Style) -> NSFont {
-        .monospacedDigitSystemFont(ofSize: style == .twoLines ? 10 : 12, weight: .medium)
+        .monospacedDigitSystemFont(ofSize: style.isTwoLines ? 10 : 12, weight: .medium)
+    }
+
+    private static func twoLineSymbol(for entry: MenuBarGraphicEntry, style: Style, color: NSColor) -> NSImage? {
+        guard style == .twoLinesIcons, !entry.showsLabelWithIcon, entry.pairID != "network",
+              let name = entry.symbolName else { return nil }
+        return NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 10, weight: .medium)
+                .applying(.init(paletteColors: [color])))
+    }
+
+    private static func draw(_ symbol: NSImage, in box: NSRect) {
+        let scale = min(box.width / symbol.size.width, box.height / symbol.size.height)
+        let size = NSSize(width: symbol.size.width * scale, height: symbol.size.height * scale)
+        symbol.draw(in: NSRect(x: box.midX - size.width / 2, y: box.midY - size.height / 2,
+                               width: size.width, height: size.height))
     }
 
     private static func iconWidth(for entry: MenuBarGraphicEntry, font: NSFont) -> CGFloat {
@@ -145,8 +168,9 @@ enum MenuBarGraphicRenderer {
             ? textWidth(entry.label, font: font) + 3 : 16
     }
 
-    private static func valueWidth(for entry: MenuBarGraphicEntry, font: NSFont, prefix: String = "") -> CGFloat {
-        [entry.value, entry.widthTemplate, "N/A"].map { textWidth(prefix + $0, font: font) }.max() ?? 0
+    private static func valueWidth(for entry: MenuBarGraphicEntry, font: NSFont, prefix: String = "", fixed: Bool = false) -> CGFloat {
+        let samples = fixed ? [entry.widthTemplate, "N/A"] : [entry.value, entry.widthTemplate, "N/A"]
+        return samples.map { textWidth(prefix + $0, font: font) }.max() ?? 0
     }
 
     private static func textWidth(_ text: String, font: NSFont) -> CGFloat {

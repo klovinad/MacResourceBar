@@ -82,6 +82,8 @@ final class MenuBarViewModel: ObservableObject {
 
     enum MenuBarLabelStyle: String, CaseIterable, Identifiable {
         case twoLines
+        case twoLinesCompact
+        case twoLinesIcons
         case icons
         case full
         case compact
@@ -92,6 +94,8 @@ final class MenuBarViewModel: ObservableObject {
         var label: String {
             switch self {
             case .twoLines: "Two lines"
+            case .twoLinesCompact: "Two lines compact"
+            case .twoLinesIcons: "Two lines icons"
             case .icons: "Icons"
             case .full: "Full"
             case .compact: "Compact"
@@ -102,6 +106,8 @@ final class MenuBarViewModel: ObservableObject {
         var helpText: String {
             switch self {
             case .twoLines: "Two rows in each column. Network download and upload stay together."
+            case .twoLinesCompact: "Two rows with short units and closer columns. B / K / M / G / T mean bytes / KB / MB / GB / TB per second."
+            case .twoLinesIcons: "Two rows with resource icons and short units. Disk names and network arrows stay visible. B / K / M / G / T mean bytes / KB / MB / GB / TB per second."
             case .icons: "One row with resource icons and larger values."
             case .full: "Readable labels with compact rates."
             case .compact: "Short labels with clear separators."
@@ -112,6 +118,8 @@ final class MenuBarViewModel: ObservableObject {
         var graphicStyle: MenuBarGraphicRenderer.Style? {
             switch self {
             case .twoLines: .twoLines
+            case .twoLinesCompact: .twoLinesCompact
+            case .twoLinesIcons: .twoLinesIcons
             case .icons: .icons
             case .full, .compact, .mini: nil
             }
@@ -606,25 +614,28 @@ final class MenuBarViewModel: ObservableObject {
 
     func menuBarGraphicEntries(for style: MenuBarLabelStyle) -> [MenuBarGraphicEntry] {
         let detailed = style == .twoLines
+        let shortUnits = style == .twoLinesCompact || style == .twoLinesIcons
         func rate(_ bytes: Double) -> String {
-            detailed ? ByteRateFormatter.stableMenuRate(for: bytes, preferredUnitIndex: nil).text
+            detailed || shortUnits ? ByteRateFormatter.twoLineMenuRate(for: bytes, shortUnits: shortUnits)
                 : readableMiniTrayRate(for: bytes)
         }
-        let rateTemplate = detailed ? "1023.9MB/s" : "999M"
+        let rateTemplate = detailed ? "1023.9MB/s" : (shortUnits ? "1023.9M" : "999M")
+        func networkRate(_ bytes: Double) -> String {
+            if shortUnits { return rate(bytes) }
+            return detailed ? ByteRateFormatter.networkFullMenuRate(for: bytes)
+                : ByteRateFormatter.networkMenuRate(for: bytes)
+        }
+        let networkTemplate = detailed ? "999+ MB/s" : rateTemplate
         let entries = orderedVisibleTrayMetrics.flatMap { metric -> [MenuBarGraphicEntry] in
             switch metric {
             case .network:
                 return [
                     MenuBarGraphicEntry(id: "network-download", label: "↓",
-                        value: networkTotalsLastUpdatedAt == nil ? "N/A" : (detailed
-                            ? ByteRateFormatter.networkFullMenuRate(for: totalDownloadBytesPerSecond)
-                            : ByteRateFormatter.networkMenuRate(for: totalDownloadBytesPerSecond)),
-                        widthTemplate: detailed ? "999+ MB/s" : "999M", symbolName: "arrow.down", pairID: "network"),
+                        value: networkTotalsLastUpdatedAt == nil ? "N/A" : networkRate(totalDownloadBytesPerSecond),
+                        widthTemplate: networkTemplate, symbolName: "arrow.down", pairID: "network"),
                     MenuBarGraphicEntry(id: "network-upload", label: "↑",
-                        value: networkTotalsLastUpdatedAt == nil ? "N/A" : (detailed
-                            ? ByteRateFormatter.networkFullMenuRate(for: totalUploadBytesPerSecond)
-                            : ByteRateFormatter.networkMenuRate(for: totalUploadBytesPerSecond)),
-                        widthTemplate: detailed ? "999+ MB/s" : "999M", symbolName: "arrow.up", pairID: "network")
+                        value: networkTotalsLastUpdatedAt == nil ? "N/A" : networkRate(totalUploadBytesPerSecond),
+                        widthTemplate: networkTemplate, symbolName: "arrow.up", pairID: "network")
                 ]
             case .cpu:
                 return [MenuBarGraphicEntry(id: metric.rawValue, label: "CPU", value: formattedCPUUsage,
@@ -1180,43 +1191,43 @@ final class MenuBarViewModel: ObservableObject {
             guard networkTotalsLastUpdatedAt != nil else {
                 switch style {
                 case .full: return ["Network N/A"]
-                case .compact, .mini, .twoLines, .icons: return ["NET N/A"]
+                case .compact, .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["NET N/A"]
                 }
             }
             switch style {
             case .full: return ["Network ↓ 999+ MB/s", "↑ 999+ MB/s"]
             case .compact: return ["↓ 999M", "↑ 999M"]
-            case .mini, .twoLines, .icons: return miniTraySlots(for: metric).map(\.widthTemplate)
+            case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return miniTraySlots(for: metric).map(\.widthTemplate)
             }
         case .cpu:
             guard cpuMetricIsAvailable else {
                 switch style {
                 case .full, .compact: return ["CPU N/A"]
-                case .mini, .twoLines, .icons: return ["C N/A"]
+                case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["C N/A"]
                 }
             }
             switch style {
             case .full, .compact: return ["CPU 100%"]
-            case .mini, .twoLines, .icons: return ["C 100%"]
+            case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["C 100%"]
             }
         case .cpuTemp:
             switch style {
             case .full: return ["Temp 100°C"]
             case .compact: return ["T 100°"]
-            case .mini, .twoLines, .icons: return ["T 100°"]
+            case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["T 100°"]
             }
         case .memory:
             guard memoryMetricIsAvailable else {
                 switch style {
                 case .full: return ["Memory N/A"]
                 case .compact: return ["RAM N/A"]
-                case .mini, .twoLines, .icons: return ["R N/A"]
+                case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["R N/A"]
                 }
             }
             switch style {
             case .full: return ["Memory 100%"]
             case .compact: return ["RAM 100%"]
-            case .mini, .twoLines, .icons: return ["R 100%"]
+            case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["R 100%"]
             }
         case .disk:
             guard diskMetricIsAvailable else {
@@ -1225,7 +1236,7 @@ final class MenuBarViewModel: ObservableObject {
             switch style {
             case .full: return ["Disk 1023.9M"]
             case .compact: return ["D 999M"]
-            case .mini, .twoLines, .icons: return ["D 999M"]
+            case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["D 999M"]
             }
         case .externalDisk:
             guard !externalDiskActivities.isEmpty else {
@@ -1235,7 +1246,7 @@ final class MenuBarViewModel: ObservableObject {
                 switch style {
                 case .full: return ["External disks N/A"]
                 case .compact: return ["EXT N/A"]
-                case .mini, .twoLines, .icons: return ["EXT 999M"]
+                case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["EXT 999M"]
                 }
             }
 
@@ -1272,7 +1283,7 @@ final class MenuBarViewModel: ObservableObject {
                     "↓ \(ByteRateFormatter.networkMenuRate(for: totalDownloadBytesPerSecond))",
                     "↑ \(ByteRateFormatter.networkMenuRate(for: totalUploadBytesPerSecond))"
                 ]
-            case .mini, .twoLines, .icons:
+            case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons:
                 return [
                     "↓ \(ByteRateFormatter.networkMenuRate(for: totalDownloadBytesPerSecond))",
                     "↑ \(ByteRateFormatter.networkMenuRate(for: totalUploadBytesPerSecond))"
@@ -1282,7 +1293,7 @@ final class MenuBarViewModel: ObservableObject {
             guard cpuMetricIsAvailable else {
                 switch style {
                 case .full, .compact: return ["CPU N/A"]
-                case .mini, .twoLines, .icons: return ["C N/A"]
+                case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["C N/A"]
                 }
             }
             switch style {
@@ -1290,14 +1301,14 @@ final class MenuBarViewModel: ObservableObject {
                 return [String(format: "CPU %.0f%%", cpuUsagePercent)]
             case .compact:
                 return [String(format: "CPU %.0f%%", cpuUsagePercent)]
-            case .mini, .twoLines, .icons:
+            case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons:
                 return [String(format: "C%.0f%%", cpuUsagePercent)]
             }
         case .cpuTemp:
             guard let cpuTemperatureCelsius else {
                 switch style {
                 case .full: return ["Temp N/A"]
-                case .compact, .mini, .twoLines, .icons: return ["T N/A"]
+                case .compact, .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["T N/A"]
                 }
             }
             switch style {
@@ -1305,7 +1316,7 @@ final class MenuBarViewModel: ObservableObject {
                 return [String(format: "Temp %.0f°C", cpuTemperatureCelsius)]
             case .compact:
                 return [String(format: "T %.0f°", cpuTemperatureCelsius)]
-            case .mini, .twoLines, .icons:
+            case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons:
                 return [String(format: "T%.0f°", cpuTemperatureCelsius)]
             }
         case .memory:
@@ -1313,7 +1324,7 @@ final class MenuBarViewModel: ObservableObject {
                 switch style {
                 case .full: return ["Memory N/A"]
                 case .compact: return ["RAM N/A"]
-                case .mini, .twoLines, .icons: return ["R N/A"]
+                case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["R N/A"]
                 }
             }
             switch style {
@@ -1321,14 +1332,14 @@ final class MenuBarViewModel: ObservableObject {
                 return [String(format: "Memory %.0f%%", memoryUsagePercent)]
             case .compact:
                 return [String(format: "RAM %.0f%%", memoryUsagePercent)]
-            case .mini, .twoLines, .icons:
+            case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons:
                 return [String(format: "R%.0f%%", memoryUsagePercent)]
             }
         case .disk:
             guard diskMetricIsAvailable else {
                 switch style {
                 case .full: return ["Disk N/A"]
-                case .compact, .mini, .twoLines, .icons: return ["D N/A"]
+                case .compact, .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["D N/A"]
                 }
             }
             switch style {
@@ -1336,7 +1347,7 @@ final class MenuBarViewModel: ObservableObject {
                 return ["Disk \(compactTrayRate(for: diskBytesPerSecond))"]
             case .compact:
                 return ["D \(readableMiniTrayRate(for: diskBytesPerSecond))"]
-            case .mini, .twoLines, .icons:
+            case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons:
                 return ["D\(miniTrayRate(for: diskBytesPerSecond))"]
             }
         case .externalDisk:
@@ -1347,7 +1358,7 @@ final class MenuBarViewModel: ObservableObject {
                 switch style {
                 case .full: return ["External disks N/A"]
                 case .compact: return ["EXT N/A"]
-                case .mini, .twoLines, .icons: return ["X N/A"]
+                case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons: return ["X N/A"]
                 }
             }
 
@@ -1364,7 +1375,7 @@ final class MenuBarViewModel: ObservableObject {
                 case .compact:
                     return "\(externalDiskShortLabel(disk)) "
                         + readableMiniTrayRate(for: bytesPerSecond)
-                case .mini, .twoLines, .icons:
+                case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons:
                     return "\(externalDiskShortLabel(disk)):"
                         + miniTrayRate(for: bytesPerSecond)
                 }

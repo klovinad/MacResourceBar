@@ -946,7 +946,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
         case .compact:
             NSFont.monospacedSystemFont(ofSize: 11.5, weight: .medium)
-        case .mini, .twoLines, .icons:
+        case .mini, .twoLines, .twoLinesCompact, .twoLinesIcons, .icons:
             NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
         }
     }

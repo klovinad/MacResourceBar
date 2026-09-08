@@ -68,3 +68,14 @@ Full and Compact now keep the selected text format when the menu bar is narrow. 
 - CI's bundle-version check was brought forward to build 6. The selected metric order, sampling intervals and the new graphic layouts are unchanged by this follow-up.
 
 Follow-up receipts, screenshots and the previous app bundle are under ignored `Release/qa/2026-09-08-full/`. Public signing/notarization and the manual/hardware checks recorded above remain separate acceptance gates.
+
+## Three two-line styles — 1.2 (7), 2026-09-08
+
+The saved style picker now offers Two lines, Two lines compact and Two lines icons. The compact variants use short rate units and closer columns; the icon variant retains external disk labels and network arrows. All three use fixed value fields with right-aligned digits. Settings uses a menu picker so all seven styles fit.
+
+- `swift test`: **31 tests passed**. Coverage includes all eight displayed values across unit boundaries, rounding, zero, three-digit percentages and `N/A`; fixed column positions and unclipped values; network-pair overflow; and persistence for all graphic styles.
+- The universal Release build and local DMG passed architecture, signature and image verification. The installed build 7 and running executable passed release-receipt correspondence.
+- All three styles were inspected in the actual menu bar and Settings preview, with both external disks and both network directions visible. The popover and Settings choices agree. Two lines compact survived a normal quit/relaunch; the original Two lines selection was restored after the check.
+- Settings keyboard checks passed: Tab visibly focused the style picker, Space opened it, and Home/Enter selected Two lines. Measured glyph-interior contrast was **6.81:1** on the current menu bar and **14.67:1** in the light Settings preview.
+
+Build command: `RELEASE_DIR=Release/qa/2026-09-08-density/package ./script/package_dmg.sh`. Local screenshots, receipts, test/build logs and the previous installed app are under ignored `Release/qa/2026-09-08-density/`. The existing public signing/notarization and untested hardware gates still apply; this change did not alter sampling or re-measure its overhead.

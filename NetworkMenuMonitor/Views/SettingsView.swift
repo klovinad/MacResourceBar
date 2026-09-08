@@ -122,7 +122,7 @@ struct SettingsView: View {
                         Text(style.label).tag(style)
                     }
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.menu)
                 .onMoveCommand(perform: viewModel.moveMenuBarLabelStyle)
 
                 Text(viewModel.menuBarLabelStyle.helpText)

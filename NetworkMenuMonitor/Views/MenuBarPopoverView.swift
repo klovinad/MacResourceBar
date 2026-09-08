@@ -276,8 +276,8 @@ struct MenuBarPopoverView: View {
             .pickerStyle(.menu)
             .labelsHidden()
             .controlSize(.small)
-            .frame(width: 132)
-            .help("Menu bar style: Two lines, Icons, Full, Compact or Mini")
+            .frame(width: 164)
+            .help(viewModel.menuBarLabelStyle.helpText)
             .accessibilityLabel("Menu bar style")
             .onMoveCommand(perform: viewModel.moveMenuBarLabelStyle)
 
