@@ -58,11 +58,13 @@ The source tree targets **1.2 (build 7)**. The download link above points to the
 
 Choose a style in the dashboard header or **Settings → Menu Bar**. The choice survives a relaunch. The three two-line layouts keep every selected value in fixed-width columns, including each external disk and both network directions.
 
-| Style | Actual menu bar | Details |
-| --- | --- | --- |
-| **Two lines** | ![Two lines with text labels and full rate units](Docs/tray-two-lines.png) | Text labels and explicit rate units. |
-| **Two lines compact** | ![Two lines compact with short rate units](Docs/tray-two-lines-compact.png) | The same values with short units and closer columns. |
-| **Two lines icons** | ![Two lines icons retaining disk labels and network arrows](Docs/tray-two-lines-icons.png) | Resource icons with disk labels and network arrows retained. |
+| Style | Actual menu bar |
+| --- | --- |
+| **Two lines** | ![Two lines with text labels and full rate units](Docs/tray-two-lines.png) |
+| **Two lines compact** | ![Two lines compact with short rate units](Docs/tray-two-lines-compact.png) |
+| **Two lines icons** | ![Two lines icons retaining disk labels and network arrows](Docs/tray-two-lines-icons.png) |
+
+**Two lines** uses text labels and explicit rate units. **Two lines compact** shortens the units and the spaces between columns. **Two lines icons** replaces resource labels with icons, while retaining disk labels and network arrows.
 
 **Icons**, **Full**, **Compact** and **Mini** provide single-row alternatives. On a narrow menu bar, `+N` points to additional values in the dashboard without changing the selected style. Short rate suffixes B / K / M / G / T mean bytes / KB / MB / GB / TB per second.
 
